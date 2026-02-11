@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Career Roadmap{% endblock %}
+
+{% block content %}
+<h1>Your Career Roadmap</h1>
+
+{% if steps %}
+  <ul>
+    {% for step in steps %}
+      <li>
+        <strong>{{ step.title }}</strong>
+        — {{ step.get_status_display }}
+        {% if step.description %}
+          <p>{{ step.description }}</p>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p>No roadmap steps yet.</p>
+  <p>Start by adding your first step!</p>
+{% endif %}
+
+{% endblock %}

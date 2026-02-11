@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+  <h1>Welcome to Job Roadmap</h1>
+
+  {% if user.is_authenticated %}
+    <p>You are logged in as <b>{{ user.username }}</b>.</p>
+    <p><a href="{% url 'profile' %}">Go to your profile</a></p>
+  {% else %}
+    <p>Please log in or create an account.</p>
+    <p>
+      <a href="{% url 'login' %}"><button>Log In</button></a>
+      <a href="{% url 'signup' %}"><button>Sign Up</button></a>
+    </p>
+  {% endif %}
+{% endblock %}
