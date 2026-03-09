@@ -1,0 +1,54 @@
+# ── macOS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# ── Virtual environment ────────────────────────────────────────────────────────
+adaptive_job_rec/
+# (the venv's own .gitignore already ignores its contents,
+#  but excluding the whole folder avoids accidentally committing it)
+
+# ── Environment / secrets ──────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Generated output files ─────────────────────────────────────────────────────
+outputs/
+
+# ── Node / Frontend ────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── Editor & IDE ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS / misc ──────────────────────────────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
