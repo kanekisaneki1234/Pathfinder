@@ -6,7 +6,7 @@ import Layout from '../../components/Layout'
 import GraphViewer from '../../components/GraphViewer'
 import ScoreBar from '../../components/ScoreBar'
 import SkillBadge from '../../components/SkillBadge'
-import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
 
 function BonusIndicator({ label, value }) {
   const pct = Math.round(value * 100)
@@ -53,11 +53,14 @@ export default function MatchExplorer() {
   const userId  = viewAs || session.userId
   const isProxy = !!viewAs  // recruiter viewing on behalf of a candidate
 
-  const [detail, setDetail]       = useState(null)
-  const [paths, setPaths]         = useState([])
-  const [pathsOpen, setPathsOpen] = useState(true)
-  const [loading, setLoading]     = useState(true)
-  const [error, setError]         = useState(null)
+  const [detail, setDetail]           = useState(null)
+  const [paths, setPaths]             = useState([])
+  const [pathsOpen, setPathsOpen]     = useState(true)
+  const [loading, setLoading]         = useState(true)
+  const [error, setError]             = useState(null)
+  const [explanation, setExplanation] = useState(null)
+  const [explaining, setExplaining]   = useState(false)
+  const [explainError, setExplainError] = useState(null)
 
   useEffect(() => {
     async function load() {
@@ -77,6 +80,19 @@ export default function MatchExplorer() {
     }
     load()
   }, [jobId, userId])
+
+  async function handleExplain() {
+    setExplaining(true)
+    setExplainError(null)
+    try {
+      const res = await api.explainMatch(userId, jobId)
+      setExplanation(res.explanation)
+    } catch (e) {
+      setExplainError(e.message)
+    } finally {
+      setExplaining(false)
+    }
+  }
 
   const iframeSrc = api.matchVizUrl(userId, jobId)
 
@@ -190,12 +206,36 @@ export default function MatchExplorer() {
                   </div>
                 )}
 
-                {/* Explanation */}
-                {detail.explanation && (
-                  <p className="text-xs italic mb-6" style={{ color: '#8892a4' }}>
-                    {detail.explanation}
-                  </p>
-                )}
+                {/* AI Explanation */}
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1"
+                       style={{ color: '#5dade2' }}>
+                      <Sparkles size={12} /> AI Explanation
+                    </p>
+                    {!explanation && !explaining && (
+                      <button
+                        onClick={handleExplain}
+                        className="text-xs px-2 py-0.5 rounded transition-colors"
+                        style={{ background: '#0f3460', color: '#5dade2' }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#1a4a80'}
+                        onMouseLeave={e => e.currentTarget.style.background = '#0f3460'}>
+                        Generate
+                      </button>
+                    )}
+                  </div>
+                  {explaining && (
+                    <p className="text-xs" style={{ color: '#8892a4' }}>Generating…</p>
+                  )}
+                  {explanation && (
+                    <p className="text-xs leading-relaxed" style={{ color: '#c8d0db' }}>
+                      {explanation}
+                    </p>
+                  )}
+                  {explainError && (
+                    <p className="text-xs" style={{ color: '#e74c3c' }}>{explainError}</p>
+                  )}
+                </div>
               </>
             )}
 

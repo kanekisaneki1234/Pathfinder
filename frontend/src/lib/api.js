@@ -72,6 +72,7 @@ export const api = {
   getCandidates:    (jobId)                => get(`/jobs/${jobId}/matches`),
   getMatchDetail:   (userId, jobId)        => get(`/users/${userId}/matches/${jobId}`),
   getMatchPaths:    (userId, jobId, limit) => get(`/users/${userId}/matches/${jobId}/paths${limit ? `?limit=${limit}` : ''}`),
+  explainMatch:     (userId, jobId)        => post(`/users/${userId}/matches/${jobId}/explain`, {}),
 
   // Visualization (POST generates, GET url used in iframe src)
   generateUserViz:  (userId)               => post(`/users/${userId}/visualize`),

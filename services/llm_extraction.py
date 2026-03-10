@@ -126,6 +126,69 @@ class LLMExtractionService:
         )
         return extracted
 
+    async def generate_match_explanation(
+        self,
+        user_id: str,
+        job_title: str,
+        company: str | None,
+        total_score: float,
+        skill_score: float,
+        domain_score: float,
+        culture_bonus: float,
+        preference_bonus: float,
+        matched_skills: list[str],
+        missing_skills: list[str],
+        matched_domains: list[str],
+        missing_domains: list[str],
+        paths: list[str],
+    ) -> str:
+        """
+        Generate a natural-language explanation of a user-job match.
+
+        Passes all structured match data (scores, matched/missing lists, graph paths)
+        to the LLM and returns a concise 2–3 sentence plain-English summary written
+        for a recruiter. Uses free-text mode (no JSON) at temperature 0.4.
+        """
+        company_str = company or "Unknown Company"
+        matched_skills_str = ", ".join(matched_skills) if matched_skills else "None"
+        missing_skills_str = ", ".join(missing_skills) if missing_skills else "None"
+        matched_domains_str = ", ".join(matched_domains) if matched_domains else "None"
+        missing_domains_str = ", ".join(missing_domains) if missing_domains else "None"
+        paths_str = "\n".join(f"- {p}" for p in paths[:10]) if paths else "(no direct graph paths found)"
+
+        system_msg = (
+            "You are a career advisor writing match summaries for a knowledge-graph-based job matching platform. "
+            "Write concise, plain-English summaries. Be specific — always name actual skills and domains "
+            "from the data provided. Never invent data not given to you. Do not use bullet points."
+        )
+
+        user_msg = (
+            f"Candidate: {user_id}\n"
+            f"Job: {job_title} at {company_str}\n"
+            f"Overall Match Score: {round(total_score * 100)}% "
+            f"(Skills 65% weight: {round(skill_score * 100)}%, Domain 35% weight: {round(domain_score * 100)}%)\n"
+            f"Culture Fit Bonus: {round(culture_bonus * 100)}%\n"
+            f"Preference Fit Bonus: {round(preference_bonus * 100)}%\n\n"
+            f"Matched skills: {matched_skills_str}\n"
+            f"Skill gaps: {missing_skills_str}\n"
+            f"Matched domains: {matched_domains_str}\n"
+            f"Domain gaps: {missing_domains_str}\n\n"
+            f"Knowledge graph paths showing how this candidate connects to the job:\n{paths_str}\n\n"
+            "Write 2–3 sentences explaining why this candidate is or is not a strong match for this role. "
+            "Mention specific skills and domains by name. If there are gaps, note what they would need. "
+            "Write for a recruiter."
+        )
+
+        text = await self._call_with_retry(
+            model=self._model_name,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.4,
+        )
+        return text.strip()
+
     async def extract_job_posting(self, job_text: str) -> JobPostingExtraction:
         """
         Extract structured job requirements from raw job posting text.

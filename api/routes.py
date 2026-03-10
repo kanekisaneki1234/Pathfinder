@@ -33,6 +33,7 @@ from models.schemas import (
     MatchResult,
 )
 from services.ingestion import IngestionService
+from services.llm_extraction import LLMExtractionService
 from services.matching_engine import MatchingEngine
 from services.visualization import VisualizationService
 
@@ -243,6 +244,56 @@ async def trace_match_paths(
     engine = MatchingEngine(db)
     paths = await engine.trace_match_paths(user_id, job_id, limit=limit)
     return {"user_id": user_id, "job_id": job_id, "paths": paths}
+
+
+@router.post(
+    "/users/{user_id}/matches/{job_id}/explain",
+    tags=["matching"],
+    summary="Generate LLM explanation for a user-job match",
+)
+async def explain_match(
+    user_id: str,
+    job_id: str,
+    db: Neo4jClient = Depends(get_neo4j),
+):
+    """
+    Generate a natural-language explanation for a user-job match.
+
+    Fetches match scores and graph paths from Neo4j, then passes all structured
+    data to Groq (llama-3.3-70b-versatile) to produce a concise 2–3 sentence
+    plain-English summary written for a recruiter.
+    """
+    engine = MatchingEngine(db)
+    result = await engine._score_user_job_pair(user_id, job_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404, detail=f"User '{user_id}' or job '{job_id}' not found"
+        )
+    paths_data = await engine.trace_match_paths(user_id, job_id, limit=10)
+    path_strings = [p["path"] for p in paths_data]
+
+    try:
+        llm = LLMExtractionService()
+        explanation = await llm.generate_match_explanation(
+            user_id=user_id,
+            job_title=result.job_title,
+            company=result.company,
+            total_score=result.total_score,
+            skill_score=result.skill_score,
+            domain_score=result.domain_score,
+            culture_bonus=result.culture_bonus,
+            preference_bonus=result.preference_bonus,
+            matched_skills=result.matched_skills,
+            missing_skills=result.missing_skills,
+            matched_domains=result.matched_domains,
+            missing_domains=result.missing_domains,
+            paths=path_strings,
+        )
+    except Exception as e:
+        logger.exception(f"LLM explanation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"user_id": user_id, "job_id": job_id, "explanation": explanation}
 
 
 # ── Visualization ──────────────────────────────────────────────────────────────
