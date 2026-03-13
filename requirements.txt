@@ -8,3 +8,4 @@ pydantic-settings==2.6.1
 python-dotenv==1.0.1
 networkx==3.4.2
 pypdf==5.1.0
+aiosqlite==0.20.0

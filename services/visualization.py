@@ -128,15 +128,24 @@ class VisualizationService:
             node_id = node.get("id", "")
             label = str(node.get("label", ""))[:30]
             node_type = node.get("type", "default")
+            weight = node.get("weight")
+
+            if node_type in ("Skill", "Domain") and weight is not None:
+                size = int(10 + weight * 30)  # maps 0.0→10, 1.0→40
+                years = node.get("years") or node.get("years_experience")
+                level = node.get("level") or node.get("depth") or "n/a"
+                years_str = f"{years} yrs" if years is not None else "n/a yrs"
+                title = f"{label}  ·  {node_type} | {years_str} | {level} | weight: {weight:.2f}"
+            else:
+                size = NODE_SIZES.get(node_type, DEFAULT_NODE_SIZE)
+                title = f"{label}  ·  {node_type}"
 
             G.add_node(
                 node_id,
                 label=label,
-                title=(
-                    f"{label}  ·  {node_type}"
-                ),
+                title=title,
                 color=NODE_TYPE_COLORS.get(node_type, DEFAULT_NODE_COLOR),
-                size=NODE_SIZES.get(node_type, DEFAULT_NODE_SIZE),
+                size=size,
             )
 
         for edge in edges_data:
@@ -735,7 +744,11 @@ class VisualizationService:
             RETURN DISTINCT
                 elementId(n) AS id,
                 coalesce(n.name, n.title, n.id, n.pattern, n.style, n.type, labels(n)[0], '') AS label,
-                labels(n)[0] AS type
+                labels(n)[0] AS type,
+                n.weight AS weight,
+                n.years AS years,
+                n.level AS level,
+                n.depth AS depth
             """,
             query_params,
         )
@@ -772,7 +785,11 @@ class VisualizationService:
             RETURN
                 elementId(n) AS id,
                 coalesce(n.name, n.title, n.id, n.pattern, n.style, n.type, labels(n)[0], '') AS label,
-                labels(n)[0] AS type
+                labels(n)[0] AS type,
+                n.weight AS weight,
+                n.years AS years,
+                n.level AS level,
+                n.depth AS depth
             """,
             query_params,
         )

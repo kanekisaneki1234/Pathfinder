@@ -43,3 +43,28 @@ def build_explanation_text(scores: dict[str, float], weights: dict[str, float]) 
             f"{score:.0%} match (contributes {contribution:.1%} to total)"
         )
     return " | ".join(lines)
+
+
+def compute_skill_weight(
+    years: float | None,
+    num_projects: int,
+    level: str | None,
+) -> float:
+    """
+    Compute expertise weight (0.0–1.0) for a Skill or Domain node.
+
+    Formula: clamp(years*0.4 + num_projects*0.3 + level_val*0.3, 0.0, 1.0)
+    level_val mapping:
+      beginner/shallow  → 0.2
+      intermediate/moderate → 0.6
+      advanced/deep/expert  → 1.0
+      unknown           → 0.4
+    """
+    level_mapping = {
+        "beginner": 0.2, "shallow": 0.2,
+        "intermediate": 0.6, "moderate": 0.6,
+        "advanced": 1.0, "deep": 1.0, "expert": 1.0,
+    }
+    level_val = level_mapping.get(level or "", 0.4)
+    raw = (years or 0.0) * 0.4 + num_projects * 0.3 + level_val * 0.3
+    return min(1.0, max(0.0, raw))

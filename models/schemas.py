@@ -238,3 +238,23 @@ class IngestionStats(BaseModel):
     domains_extracted: int = 0
     projects_extracted: int = 0
     experiences_extracted: int = 0
+
+
+class GraphVersion(BaseModel):
+    version_id: str
+    entity_type: str   # 'user' | 'job'
+    entity_id: str
+    session_id: Optional[str] = None
+    label: str
+    created_at: str
+
+
+class CheckpointRequest(BaseModel):
+    label: Optional[str] = Field(default=None, description="Human-readable label for this checkpoint")
+
+
+class RollbackResponse(BaseModel):
+    version_id: str
+    entity_type: str
+    entity_id: str
+    status: str = "restored"

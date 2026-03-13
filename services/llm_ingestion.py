@@ -16,6 +16,7 @@ Schema created (User side):
 import logging
 from database.neo4j_client import Neo4jClient
 from models.schemas import UserProfileExtraction, JobPostingExtraction
+from services.weights import recompute_weights
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class LLMIngestionService:
         await self._ingest_experiences(user_id, extraction.experiences)
         await self._ingest_preferences(user_id, extraction.preferences)
         await self._ingest_patterns(user_id, extraction.patterns)
+        await recompute_weights(user_id, self.client)
         logger.info(f"LLM hierarchy written for user {user_id}")
 
     async def _create_user_node(self, user_id: str) -> None:

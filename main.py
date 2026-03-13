@@ -27,6 +27,7 @@ load_dotenv()
 
 from api.routes import router
 from database.neo4j_client import init_client, get_client
+from database.sqlite_client import init_sqlite
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +49,10 @@ async def lifespan(app: FastAPI):
 
     client = await init_client(neo4j_uri, neo4j_user, neo4j_pass)
     logger.info(f"Neo4j connected: {neo4j_uri}")
+
+    sqlite_path = os.environ.get("SQLITE_DB_PATH", ".data_storage/lumino.db")
+    await init_sqlite(sqlite_path)
+    logger.info(f"SQLite initialized: {sqlite_path}")
 
     output_dir = os.environ.get("OUTPUT_DIR", "./outputs")
     os.makedirs(output_dir, exist_ok=True)

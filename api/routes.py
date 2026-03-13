@@ -25,13 +25,18 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from database.neo4j_client import Neo4jClient, get_client
+from database.sqlite_client import SQLiteClient, get_sqlite
 from models.schemas import (
     BatchCandidateResponse,
     BatchMatchResponse,
+    CheckpointRequest,
+    GraphVersion,
     IngestJobRequest,
     IngestUserRequest,
     MatchResult,
+    RollbackResponse,
 )
+from services.checkpoint_service import CheckpointService
 from services.ingestion import IngestionService
 from services.llm_extraction import LLMExtractionService
 from services.matching_engine import MatchingEngine
@@ -43,6 +48,10 @@ router = APIRouter()
 
 def get_neo4j() -> Neo4jClient:
     return get_client()
+
+
+def get_sqlite_db() -> SQLiteClient:
+    return get_sqlite()
 
 
 # ── Ingestion ──────────────────────────────────────────────────────────────────
@@ -570,6 +579,148 @@ async def get_user_graph_stats(
     if stats["categories"] == 0:
         raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
     return {"user_id": user_id, **stats}
+
+
+# ── Checkpointing ──────────────────────────────────────────────────────────────
+
+@router.post(
+    "/users/{user_id}/graph/checkpoint",
+    response_model=GraphVersion,
+    tags=["checkpointing"],
+    summary="Create a graph checkpoint for a user",
+)
+async def create_user_checkpoint(
+    user_id: str,
+    request: CheckpointRequest,
+    db: Neo4jClient = Depends(get_neo4j),
+    sqlite: SQLiteClient = Depends(get_sqlite_db),
+):
+    """Serialize the current user subgraph to SQLite as a versioned checkpoint."""
+    output_dir = os.getenv("OUTPUT_DIR", "./outputs")
+    svc = CheckpointService(db, sqlite, output_dir)
+    try:
+        return await svc.create_checkpoint(
+            "user", user_id, request.label or f"manual_{user_id}"
+        )
+    except Exception as e:
+        logger.exception(f"User checkpoint creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/users/{user_id}/graph/versions",
+    response_model=list[GraphVersion],
+    tags=["checkpointing"],
+    summary="List graph versions for a user",
+)
+async def list_user_versions(
+    user_id: str,
+    db: Neo4jClient = Depends(get_neo4j),
+    sqlite: SQLiteClient = Depends(get_sqlite_db),
+):
+    """Return the 10 most recent graph checkpoints for a user."""
+    output_dir = os.getenv("OUTPUT_DIR", "./outputs")
+    svc = CheckpointService(db, sqlite, output_dir)
+    try:
+        return await svc.list_versions("user", user_id)
+    except Exception as e:
+        logger.exception(f"User version listing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/users/{user_id}/graph/rollback/{version_id}",
+    response_model=RollbackResponse,
+    tags=["checkpointing"],
+    summary="Rollback a user graph to a previous version",
+)
+async def rollback_user_graph(
+    user_id: str,
+    version_id: str,
+    db: Neo4jClient = Depends(get_neo4j),
+    sqlite: SQLiteClient = Depends(get_sqlite_db),
+):
+    """Restore the user subgraph in Neo4j from a previously saved checkpoint."""
+    output_dir = os.getenv("OUTPUT_DIR", "./outputs")
+    svc = CheckpointService(db, sqlite, output_dir)
+    try:
+        await svc.rollback("user", user_id, version_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception(f"User rollback failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return RollbackResponse(version_id=version_id, entity_type="user", entity_id=user_id)
+
+
+@router.post(
+    "/jobs/{job_id}/graph/checkpoint",
+    response_model=GraphVersion,
+    tags=["checkpointing"],
+    summary="Create a graph checkpoint for a job",
+)
+async def create_job_checkpoint(
+    job_id: str,
+    request: CheckpointRequest,
+    db: Neo4jClient = Depends(get_neo4j),
+    sqlite: SQLiteClient = Depends(get_sqlite_db),
+):
+    """Serialize the current job subgraph to SQLite as a versioned checkpoint."""
+    output_dir = os.getenv("OUTPUT_DIR", "./outputs")
+    svc = CheckpointService(db, sqlite, output_dir)
+    try:
+        return await svc.create_checkpoint(
+            "job", job_id, request.label or f"manual_{job_id}"
+        )
+    except Exception as e:
+        logger.exception(f"Job checkpoint creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/jobs/{job_id}/graph/versions",
+    response_model=list[GraphVersion],
+    tags=["checkpointing"],
+    summary="List graph versions for a job",
+)
+async def list_job_versions(
+    job_id: str,
+    db: Neo4jClient = Depends(get_neo4j),
+    sqlite: SQLiteClient = Depends(get_sqlite_db),
+):
+    """Return the 10 most recent graph checkpoints for a job."""
+    output_dir = os.getenv("OUTPUT_DIR", "./outputs")
+    svc = CheckpointService(db, sqlite, output_dir)
+    try:
+        return await svc.list_versions("job", job_id)
+    except Exception as e:
+        logger.exception(f"Job version listing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/jobs/{job_id}/graph/rollback/{version_id}",
+    response_model=RollbackResponse,
+    tags=["checkpointing"],
+    summary="Rollback a job graph to a previous version",
+)
+async def rollback_job_graph(
+    job_id: str,
+    version_id: str,
+    db: Neo4jClient = Depends(get_neo4j),
+    sqlite: SQLiteClient = Depends(get_sqlite_db),
+):
+    """Restore the job subgraph in Neo4j from a previously saved checkpoint."""
+    output_dir = os.getenv("OUTPUT_DIR", "./outputs")
+    svc = CheckpointService(db, sqlite, output_dir)
+    try:
+        await svc.rollback("job", job_id, version_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception(f"Job rollback failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return RollbackResponse(version_id=version_id, entity_type="job", entity_id=job_id)
 
 
 # ── Admin ──────────────────────────────────────────────────────────────────────
