@@ -141,13 +141,16 @@ class LLMExtractionService:
         matched_domains: list[str],
         missing_domains: list[str],
         paths: list[str],
+        perspective: str = "recruiter",
     ) -> str:
         """
         Generate a natural-language explanation of a user-job match.
 
         Passes all structured match data (scores, matched/missing lists, graph paths)
-        to the LLM and returns a concise 2–3 sentence plain-English summary written
-        for a recruiter. Uses free-text mode (no JSON) at temperature 0.4.
+        to the LLM and returns a concise 2–3 sentence plain-English summary.
+        perspective='seeker'   → second person ("You have strong skills in...")
+        perspective='recruiter' → third person ("Owais is a strong match...")
+        Uses free-text mode (no JSON) at temperature 0.4.
         """
         company_str = company or "Unknown Company"
         matched_skills_str = ", ".join(matched_skills) if matched_skills else "None"
@@ -155,6 +158,19 @@ class LLMExtractionService:
         matched_domains_str = ", ".join(matched_domains) if matched_domains else "None"
         missing_domains_str = ", ".join(missing_domains) if missing_domains else "None"
         paths_str = "\n".join(f"- {p}" for p in paths[:10]) if paths else "(no direct graph paths found)"
+
+        if perspective == "seeker":
+            audience_instruction = (
+                "Write directly to the job seeker using second-person pronouns (you/your). "
+                f"For example: 'You are a strong match for this role because...'. "
+                "Do not refer to the candidate by name."
+            )
+        else:
+            audience_instruction = (
+                f"Write for a recruiter reviewing the candidate. "
+                f"Refer to the candidate by name ({user_id}) using third-person pronouns. "
+                f"For example: '{user_id} is a strong match for this role because...'."
+            )
 
         system_msg = (
             "You are a career advisor writing match summaries for a knowledge-graph-based job matching platform. "
@@ -174,9 +190,9 @@ class LLMExtractionService:
             f"Matched domains: {matched_domains_str}\n"
             f"Domain gaps: {missing_domains_str}\n\n"
             f"Knowledge graph paths showing how this candidate connects to the job:\n{paths_str}\n\n"
-            "Write 2–3 sentences explaining why this candidate is or is not a strong match for this role. "
-            "Mention specific skills and domains by name. If there are gaps, note what they would need. "
-            "Write for a recruiter."
+            f"Write 2–3 sentences explaining why this candidate is or is not a strong match for this role. "
+            f"Mention specific skills and domains by name. If there are gaps, note what they would need. "
+            f"{audience_instruction}"
         )
 
         text = await self._call_with_retry(

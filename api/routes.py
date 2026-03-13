@@ -254,6 +254,7 @@ async def trace_match_paths(
 async def explain_match(
     user_id: str,
     job_id: str,
+    perspective: str = "recruiter",
     db: Neo4jClient = Depends(get_neo4j),
 ):
     """
@@ -261,7 +262,10 @@ async def explain_match(
 
     Fetches match scores and graph paths from Neo4j, then passes all structured
     data to Groq (llama-3.3-70b-versatile) to produce a concise 2–3 sentence
-    plain-English summary written for a recruiter.
+    plain-English summary.
+
+    perspective: 'seeker'    → second person ("You are a strong match...")
+                 'recruiter' → third person  ("Owais is a strong match...")
     """
     engine = MatchingEngine(db)
     result = await engine._score_user_job_pair(user_id, job_id)
@@ -288,6 +292,7 @@ async def explain_match(
             matched_domains=result.matched_domains,
             missing_domains=result.missing_domains,
             paths=path_strings,
+            perspective=perspective,
         )
     except Exception as e:
         logger.exception(f"LLM explanation failed: {e}")
