@@ -55,7 +55,7 @@ export default function MatchExplorer() {
 
   const [detail, setDetail]           = useState(null)
   const [paths, setPaths]             = useState([])
-  const [pathsOpen, setPathsOpen]     = useState(true)
+  const [pathsOpen, setPathsOpen]     = useState(false)
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState(null)
   const [explanation, setExplanation] = useState(null)
@@ -72,6 +72,16 @@ export default function MatchExplorer() {
         ])
         setDetail(d)
         setPaths(p.paths || [])
+        // Auto-generate explanation after data loads
+        setExplaining(true)
+        try {
+          const exp = await api.explainMatch(userId, jobId, isProxy ? 'recruiter' : 'seeker')
+          setExplanation(exp.explanation)
+        } catch (e) {
+          setExplainError(e.message)
+        } finally {
+          setExplaining(false)
+        }
       } catch (err) {
         setError(err.message)
       } finally {
@@ -80,19 +90,6 @@ export default function MatchExplorer() {
     }
     load()
   }, [jobId, userId])
-
-  async function handleExplain() {
-    setExplaining(true)
-    setExplainError(null)
-    try {
-      const res = await api.explainMatch(userId, jobId)
-      setExplanation(res.explanation)
-    } catch (e) {
-      setExplainError(e.message)
-    } finally {
-      setExplaining(false)
-    }
-  }
 
   const iframeSrc = api.matchVizUrl(userId, jobId)
 
