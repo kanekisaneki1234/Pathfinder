@@ -24,7 +24,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from groq import AsyncGroq
+from litellm import acompletion
 
 from database.neo4j_client import Neo4jClient
 from database.sqlite_client import SQLiteClient
@@ -220,12 +220,7 @@ class ClarificationService:
         if not row:
             raise ValueError(f"Flag '{flag_id}' not found")
 
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY not set")
-
-        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-        client = AsyncGroq(api_key=api_key)
+        model = os.environ.get("LLM_MODEL", "groq/llama-3.3-70b-versatile")
 
         import json as _json
         schema = _json.dumps(_InterpretResult.model_json_schema(), indent=2)
@@ -257,7 +252,7 @@ class ClarificationService:
             "a specific follow-up question that will get a concrete answer."
         )
 
-        resp = await client.chat.completions.create(
+        resp = await acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": system_msg},

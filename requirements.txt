@@ -1,7 +1,7 @@
 fastapi==0.116.2
 uvicorn[standard]==0.34.3
 neo4j==5.28.3
-groq==1.0.0
+litellm
 pyvis==0.3.2
 pydantic==2.10.5
 pydantic-settings==2.6.1

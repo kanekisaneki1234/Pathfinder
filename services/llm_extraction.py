@@ -1,15 +1,12 @@
 """
-Groq-based structured extraction service.
+LiteLLM-based structured extraction service.
 
-Uses the Groq Python SDK (AsyncGroq) with JSON mode to enforce structured output.
-Groq does not accept a Pydantic response_schema directly, so the full Pydantic
-JSON schema is embedded in the system prompt and response_format={"type":
-"json_object"} is used to guarantee the response is valid JSON.
+Uses LiteLLM's acompletion with JSON mode to enforce structured output.
+The full Pydantic JSON schema is embedded in the system prompt and
+response_format={"type": "json_object"} is used to guarantee valid JSON.
 
-Model choice: llama-3.3-70b-versatile
-  - Best instruction following on Groq for complex structured extraction
-  - 128k context window handles long resumes
-  - Near-instant inference on Groq hardware despite being 70B
+Model is configured via LLM_MODEL env var in LiteLLM format "provider/model".
+Default: groq/llama-3.3-70b-versatile
 """
 
 import asyncio
@@ -17,7 +14,7 @@ import json
 import logging
 import os
 
-from groq import AsyncGroq
+from litellm import acompletion
 
 from models.schemas import UserProfileExtraction, JobPostingExtraction
 from models.taxonomies import SKILL_TAXONOMY, DOMAIN_TAXONOMY
@@ -46,9 +43,9 @@ def _build_domain_taxonomy_hint() -> str:
 
 class LLMExtractionService:
     """
-    Wraps Groq API for structured JSON extraction.
+    Wraps LiteLLM for structured JSON extraction.
 
-    Uses AsyncGroq with response_format={"type": "json_object"} and a
+    Uses acompletion with response_format={"type": "json_object"} and a
     system prompt that includes the full Pydantic JSON schema. The response
     is parsed with model_validate_json() for strict Pydantic validation.
 
@@ -57,27 +54,22 @@ class LLMExtractionService:
     """
 
     def __init__(self):
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY environment variable not set")
-
-        self._model_name = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-        self._client = AsyncGroq(api_key=api_key)
+        self._model_name = os.environ.get("LLM_MODEL", "groq/llama-3.3-70b-versatile")
         self._skill_hint = _build_skill_taxonomy_hint()
         self._domain_hint = _build_domain_taxonomy_hint()
         logger.info(f"LLM extraction service initialized with model: {self._model_name}")
 
     async def _call_with_retry(self, **kwargs) -> str:
-        """Call Groq API with exponential backoff (3 attempts: immediate, 1s, 2s)."""
+        """Call LLM with exponential backoff (3 attempts: immediate, 1s, 2s)."""
         for attempt in range(3):
             try:
-                resp = await self._client.chat.completions.create(**kwargs)
+                resp = await acompletion(**kwargs)
                 return resp.choices[0].message.content
             except Exception as e:
                 if attempt == 2:
                     raise
                 wait = 2 ** attempt
-                logger.warning(f"Groq API error (attempt {attempt + 1}/3): {e}. Retrying in {wait}s")
+                logger.warning(f"LLM API error (attempt {attempt + 1}/3): {e}. Retrying in {wait}s")
                 await asyncio.sleep(wait)
 
     async def extract_user_profile(self, profile_text: str) -> UserProfileExtraction:

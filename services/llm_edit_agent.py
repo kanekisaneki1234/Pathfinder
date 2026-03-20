@@ -1,11 +1,11 @@
 """
 LLM Edit Agent — First Principles interview loop for graph editing.
 
-Uses Groq (llama-3.3-70b-versatile) with JSON mode to produce structured
-GraphMutationProposal responses. Every turn:
+Uses LiteLLM with JSON mode to produce structured GraphMutationProposal
+responses. Every turn:
   1. Load full conversation history from SQLite session_messages
-  2. Build Groq messages array (system + history + new user message)
-  3. Call Groq with response_format={"type": "json_object"}
+  2. Build messages array (system + history + new user message)
+  3. Call LLM with response_format={"type": "json_object"}
   4. Parse response as GraphMutationProposal
   5. Persist both user message and assistant proposal to session_messages
   6. Return the proposal
@@ -16,7 +16,7 @@ import json
 import logging
 import os
 
-from groq import AsyncGroq
+from litellm import acompletion
 
 from database.neo4j_client import Neo4jClient
 from database.sqlite_client import SQLiteClient
@@ -29,11 +29,7 @@ _PROPOSAL_SCHEMA = json.dumps(GraphMutationProposal.model_json_schema(), indent=
 
 class LLMEditAgent:
     def __init__(self, neo4j: Neo4jClient, sqlite: SQLiteClient):
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY environment variable not set")
-        self._model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-        self._client = AsyncGroq(api_key=api_key)
+        self._model = os.environ.get("LLM_MODEL", "groq/llama-3.3-70b-versatile")
         self.neo4j = neo4j
         self.sqlite = sqlite
 
@@ -42,7 +38,7 @@ class LLMEditAgent:
     ) -> GraphMutationProposal:
         """
         Generate the opening interview question for a new edit session.
-        Loads graph summary from Neo4j, builds context, calls Groq, persists to SQLite.
+        Loads graph summary from Neo4j, builds context, calls LLM, persists to SQLite.
         """
         graph_summary = await self._get_graph_summary(entity_type, entity_id)
         system_msg = self._build_system_prompt(graph_summary)
@@ -77,7 +73,7 @@ class LLMEditAgent:
     ) -> GraphMutationProposal:
         """
         Process a user reply and return the next proposal.
-        Loads full history from SQLite, appends the new user message, calls Groq.
+        Loads full history from SQLite, appends the new user message, calls LLM.
         """
         graph_summary = await self._get_graph_summary(entity_type, entity_id)
         system_msg = self._build_system_prompt(graph_summary)
@@ -716,10 +712,10 @@ class LLMEditAgent:
         )
 
     async def _call_with_retry(self, messages: list) -> str:
-        """Call Groq with exponential backoff (3 attempts)."""
+        """Call LLM with exponential backoff (3 attempts)."""
         for attempt in range(3):
             try:
-                resp = await self._client.chat.completions.create(
+                resp = await acompletion(
                     model=self._model,
                     messages=messages,
                     response_format={"type": "json_object"},
@@ -730,5 +726,5 @@ class LLMEditAgent:
                 if attempt == 2:
                     raise
                 wait = 2 ** attempt
-                logger.warning(f"Groq error (attempt {attempt + 1}/3): {e}. Retrying in {wait}s")
+                logger.warning(f"LLM error (attempt {attempt + 1}/3): {e}. Retrying in {wait}s")
                 await asyncio.sleep(wait)
