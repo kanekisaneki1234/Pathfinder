@@ -7,7 +7,7 @@ Keep these separate to allow them to evolve independently.
 """
 
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -532,8 +532,14 @@ class GraphImpactItem(BaseModel):
         "culture", "behavior", "domain", "project", "experience"
     ]
     label: str = Field(description="Human-readable name of the thing being changed, e.g. 'Kubernetes'")
-    change_type: Literal["add", "update", "infer", "flag"]
+    change_type: str = Field(description="Type of graph change: add|update|infer|flag|initiated")
     detail: str = Field(description="One-sentence explanation of what changed and why it matters to the profile")
+
+    @field_validator("change_type", mode="before")
+    @classmethod
+    def coerce_change_type(cls, v: str) -> str:
+        _VALID = {"add", "update", "infer", "flag", "initiated"}
+        return v if v in _VALID else "update"
 
 
 class GraphImpactBanner(BaseModel):
