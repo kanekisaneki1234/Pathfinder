@@ -437,6 +437,96 @@ When both profiles are deep, the match between them becomes qualitative, not jus
 
 ---
 
+## Matching Algorithm
+
+### Four-Axis Scoring Model
+
+```
+total_score = skill_score × W_skills
+            + domain_score × W_domain
+            + soft_skill_score × W_soft      (only if data exists on both sides)
+            + culture_fit_score × W_culture  (only if data exists on both sides)
+```
+
+Weights adapt based on what digital twin data is available:
+
+| Available dimensions | Skills | Domain | Soft Skills | Culture |
+|---------------------|--------|--------|-------------|---------|
+| Technical only (default) | 65% | 35% | — | — |
+| Technical + culture | 55% | 25% | — | 20% |
+| Technical + soft skills | 55% | 25% | 20% | — |
+| All four | 45% | 20% | 20% | 15% |
+
+This means: completing the deep interview doesn't penalise candidates on early scores,
+but rewards them with richer signals as both sides build out their digital twins.
+
+### Dimension 1 — Evidence-Weighted Skill Score
+The single most important fix from the previous keyword-only model.
+
+```
+contribution = importance_weight × seniority_factor × evidence_weight
+
+importance_weight: must_have=1.0, nice_to_have=0.5
+seniority_factor:  min(user.years / req.min_years, 1.0)  — or 1.0 if years unknown
+evidence_weight:   claimed_only=0.30, mentioned_once=0.50,
+                   project_backed=0.80, multiple_productions=1.00
+```
+
+A candidate who lists 20 skills at `claimed_only` will score dramatically lower
+than one with 5 skills backed by production deployments.
+
+### Dimension 2 — Depth-Weighted Domain Score
+```
+contribution per matched domain = DomainDepthWeight / total_job_domains
+
+DomainDepthWeight: shallow=0.40, moderate=0.70, deep=1.00
+```
+
+Shallow domain mention is no longer equivalent to deep expertise.
+
+### Dimension 3 — Soft Skill Alignment Score
+Scores `SoftSkillRequirement` nodes (job) against user `ProblemSolvingPattern` nodes
+and `Experience.contribution_type` (ownership evidence).
+
+Mapping used: `SOFT_SKILL_TO_PATTERN` in `models/taxonomies.py`
+- `ownership` → systems_thinker, data-driven, performance-oriented + sole_engineer/tech_lead
+- `accountability` → systems_thinker, data-driven
+- `communication` → collaborative, user-focused
+- etc.
+
+`BehavioralInsight` risk patterns (push_back, avoidance, deflection) that conflict
+with `dealbreaker=true` soft skills generate `behavioral_risk_flags` in the result.
+
+Scores 0 (neutral) when no pattern data exists — does not penalise uncompleted profiles.
+
+### Dimension 4 — Culture Fit Score
+Scores `CultureIdentity` (user) against `TeamCultureIdentity` (job) on 4 axes:
+
+1. `pace_preference` vs `TeamCultureIdentity.pace`
+2. `feedback_preference` vs `TeamCultureIdentity.feedback_culture`
+3. `leadership_style` vs `TeamCultureIdentity.management_style`
+4. `energy_drains` NOT overlapping with `anti_patterns`
+
+Returns None (excluded from scoring) when either side lacks digital twin culture data.
+
+### Behavioral Risk Flags
+Returned alongside scores — not a dimension but a list of risk strings:
+- Surfaced when `BehavioralInsight.insight_type` ∈ {push_back, avoidance, deflection, inconsistency}
+- AND job has a matching `SoftSkillRequirement` with `dealbreaker=true`
+- Shown to recruiter as explicit warnings
+
+### What Was Fixed
+| Issue | Before | After |
+|-------|--------|-------|
+| Evidence strength | Tracked, ignored in scoring | `×0.30` to `×1.00` multiplier per skill |
+| Domain depth | Binary presence | `×0.40` to `×1.00` multiplier per domain |
+| Culture & preferences | Bonus signals, not in score | Culture fit is now a scored dimension (15%) |
+| Soft skills | No matching | New dimension based on behavioral patterns (20%) |
+| Digital twin nodes | All 13 nodes: stored, never queried | All queried in `gather_match_context()` |
+| LLM explanation | No human portrait | Full twin context on both sides |
+
+---
+
 ## File Reference
 
 | File | Change |

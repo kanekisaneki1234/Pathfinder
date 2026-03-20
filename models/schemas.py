@@ -445,15 +445,25 @@ class MatchResult(BaseModel):
     job_id: str
     job_title: str
     company: Optional[str]
-    total_score: float          # base score: skills + domain only (0-1)
-    skill_score: float
-    domain_score: float
-    culture_bonus: float        # bonus signal: work-style match ratio (0-1, not weighted)
-    preference_bonus: float     # bonus signal: remote/company_size match ratio (0-1, not weighted)
+    # Core score (0-1): dynamically weighted across available dimensions
+    total_score: float
+    # Individual dimension scores (0-1 each)
+    skill_score: float          # evidence-weighted: claimed_only=0.3x, project_backed=0.8x, multiple_productions=1.0x
+    domain_score: float         # depth-weighted: shallow=0.4x, moderate=0.7x, deep=1.0x
+    soft_skill_score: float = 0.0   # 0 when job has no SoftSkillRequirements or user has no patterns
+    culture_fit_score: float = 0.0  # 0 when either side lacks digital twin culture data
+    # Legacy bonus signals (kept for backwards compat, not in total_score)
+    culture_bonus: float        # work-style preference match ratio (old lightweight version)
+    preference_bonus: float     # remote/company_size match ratio
+    # Match detail
     matched_skills: List[str]
     missing_skills: List[str]
     matched_domains: List[str]
     missing_domains: List[str]
+    behavioral_risk_flags: List[str] = Field(
+        default_factory=list,
+        description="Risk signals from BehavioralInsight nodes that conflict with dealbreaker soft skills"
+    )
     explanation: str
 
 
@@ -469,12 +479,15 @@ class CandidateResult(BaseModel):
     total_score: float
     skill_score: float
     domain_score: float
+    soft_skill_score: float = 0.0
+    culture_fit_score: float = 0.0
     culture_bonus: float
     preference_bonus: float
     matched_skills: List[str]
     missing_skills: List[str]
     matched_domains: List[str]
     missing_domains: List[str]
+    behavioral_risk_flags: List[str] = Field(default_factory=list)
     explanation: str
 
 

@@ -5,22 +5,26 @@ All scoring is done through Cypher set-intersection queries — no vectors,
 no embeddings. Every score component is directly traceable to explicit
 graph edges, making the system fully scrutable.
 
-Base scoring dimensions (sum to 100%):
-  - Skills  (65%): weighted intersection via MATCHES edges, with seniority factor
-  - Domain  (35%): set intersection of user domains ∩ job domain requirements
+Four-axis scoring model:
+  Skills      (45% when all data present): evidence-weighted intersection via MATCHES edges
+  Domain      (20% when all data present): depth-weighted intersection
+  Soft Skills (20% when job has SoftSkillRequirements + user has patterns): quality alignment
+  Culture Fit (15% when both sides have digital twin culture data): identity match
 
-Bonus signals (0-1, not weighted into total_score):
-  - culture_bonus:    work-style preference match ratio
-  - preference_bonus: remote_work + company_size match ratio
+When dimensions lack data they are excluded and remaining weights rescale:
+  No soft, no culture → Skills 65% + Domain 35%  (backwards compatible)
+  Has culture, no soft → Skills 55% + Domain 25% + Culture 20%
+  Has soft, no culture → Skills 55% + Domain 25% + Soft 20%
+  All four present     → Skills 45% + Domain 20% + Soft 20% + Culture 15%
 
-Skill importance weights:
-  - must_have:    1.0
-  - nice_to_have: 0.5
-  - default:      0.8
+Skill scoring details:
+  contribution = importance_weight × seniority_factor × evidence_weight
+  evidence weights: claimed_only=0.30, mentioned_once=0.50,
+                    project_backed=0.80, multiple_productions=1.00
 
-Seniority factor per matched skill:
-  - user.years >= req.min_years OR either is null → 1.0 (full credit)
-  - user.years < req.min_years → user.years / req.min_years (partial credit)
+Domain scoring details:
+  contribution = depth_weight × (1 / total_domains)
+  depth weights: shallow=0.40, moderate=0.70, deep=1.00
 
 Name normalization: toLower(trim(...)) applied in all Cypher comparisons.
 """
@@ -28,7 +32,16 @@ Name normalization: toLower(trim(...)) applied in all Cypher comparisons.
 import logging
 from database.neo4j_client import Neo4jClient
 from models.schemas import MatchResult, BatchMatchResponse, CandidateResult, BatchCandidateResponse
-from models.taxonomies import MatchWeight, SkillImportanceWeight, normalize_work_style
+from models.taxonomies import (
+    MatchWeight,
+    SkillImportanceWeight,
+    EvidenceWeight,
+    DomainDepthWeight,
+    SOFT_SKILL_TO_PATTERN,
+    BEHAVIORAL_RISK_TYPES,
+    CULTURE_FIELD_MAP,
+    normalize_work_style,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,22 +55,13 @@ class MatchingEngine:
     # ──────────────────────────────────────────────────────────────────────────
 
     async def rank_all_jobs_for_user(self, user_id: str) -> BatchMatchResponse:
-        """
-        Score ALL jobs in the database for a given user.
-        Returns results sorted by total_score descending.
-        """
-        jobs = await self.client.run_query(
-            "MATCH (j:Job) RETURN j.id AS job_id"
-        )
-
+        jobs = await self.client.run_query("MATCH (j:Job) RETURN j.id AS job_id")
         results: list[MatchResult] = []
         for job_record in jobs:
             result = await self._score_user_job_pair(user_id, job_record["job_id"])
             if result is not None:
                 results.append(result)
-
         results.sort(key=lambda r: r.total_score, reverse=True)
-
         return BatchMatchResponse(
             user_id=user_id,
             results=results,
@@ -65,14 +69,7 @@ class MatchingEngine:
         )
 
     async def rank_all_users_for_job(self, job_id: str) -> BatchCandidateResponse:
-        """
-        Score ALL users in the database against a given job.
-        Returns results sorted by total_score descending (reverse-match).
-        """
-        users = await self.client.run_query(
-            "MATCH (u:User) RETURN u.id AS id"
-        )
-
+        users = await self.client.run_query("MATCH (u:User) RETURN u.id AS id")
         results: list[CandidateResult] = []
         for user_record in users:
             match = await self._score_user_job_pair(user_record["id"], job_id)
@@ -82,17 +79,18 @@ class MatchingEngine:
                     total_score=match.total_score,
                     skill_score=match.skill_score,
                     domain_score=match.domain_score,
+                    soft_skill_score=match.soft_skill_score,
+                    culture_fit_score=match.culture_fit_score,
                     culture_bonus=match.culture_bonus,
                     preference_bonus=match.preference_bonus,
                     matched_skills=match.matched_skills,
                     missing_skills=match.missing_skills,
                     matched_domains=match.matched_domains,
                     missing_domains=match.missing_domains,
+                    behavioral_risk_flags=match.behavioral_risk_flags,
                     explanation=match.explanation,
                 ))
-
         results.sort(key=lambda r: r.total_score, reverse=True)
-
         return BatchCandidateResponse(
             job_id=job_id,
             results=results,
@@ -106,79 +104,114 @@ class MatchingEngine:
     async def _score_user_job_pair(
         self, user_id: str, job_id: str
     ) -> MatchResult | None:
-        """
-        Compute match score for a single user-job pair.
-        Base score = Skills (65%) + Domain (35%).
-        Bonus signals = culture_bonus + preference_bonus (shown separately).
-        Returns None if either user or job is not found.
-        """
         job_info = await self.client.run_query(
             "MATCH (j:Job {id: $job_id}) RETURN j.title AS title, j.company AS company",
             {"job_id": job_id},
         )
         if not job_info:
-            logger.warning(f"Job not found: {job_id}")
             return None
-
         user_check = await self.client.run_query(
             "MATCH (u:User {id: $user_id}) RETURN u.id AS id",
             {"user_id": user_id},
         )
         if not user_check:
-            logger.warning(f"User not found: {user_id}")
             return None
 
-        skill_data   = await self._compute_skill_score(user_id, job_id)
-        domain_data  = await self._compute_domain_score(user_id, job_id)
-        culture_data = await self._compute_culture_bonus(user_id, job_id)
-        pref_data    = await self._compute_preference_bonus(user_id, job_id)
+        skill_data        = await self._compute_skill_score(user_id, job_id)
+        domain_data       = await self._compute_domain_score(user_id, job_id)
+        soft_data         = await self._compute_soft_skill_score(user_id, job_id)
+        culture_fit_data  = await self._compute_culture_fit_score(user_id, job_id)
+        culture_bonus_data = await self._compute_culture_bonus(user_id, job_id)
+        pref_data         = await self._compute_preference_bonus(user_id, job_id)
 
         skill_score       = skill_data.get("score", 0.0) or 0.0
         domain_score      = domain_data.get("score", 0.0) or 0.0
-        culture_bonus     = culture_data.get("bonus", 0.0) or 0.0
+        soft_skill_score  = soft_data.get("score")   # None = no data
+        culture_fit_score = culture_fit_data.get("score")  # None = no data
+        culture_bonus     = culture_bonus_data.get("bonus", 0.0) or 0.0
         preference_bonus  = pref_data.get("bonus", 0.0) or 0.0
 
-        total_score = round(
-            skill_score  * MatchWeight.SKILLS +
-            domain_score * MatchWeight.DOMAIN,
-            4,
+        total_score = self._compute_total_score(
+            skill_score, domain_score, soft_skill_score, culture_fit_score
         )
 
         return MatchResult(
             job_id=job_id,
             job_title=job_info[0]["title"] or "Unknown",
             company=job_info[0]["company"],
-            total_score=total_score,
+            total_score=round(total_score, 4),
             skill_score=round(skill_score, 4),
             domain_score=round(domain_score, 4),
+            soft_skill_score=round(soft_skill_score, 4) if soft_skill_score is not None else 0.0,
+            culture_fit_score=round(culture_fit_score, 4) if culture_fit_score is not None else 0.0,
             culture_bonus=round(culture_bonus, 4),
             preference_bonus=round(preference_bonus, 4),
             matched_skills=skill_data.get("matched", []),
             missing_skills=skill_data.get("missing", []),
             matched_domains=domain_data.get("matched", []),
             missing_domains=domain_data.get("missing", []),
+            behavioral_risk_flags=soft_data.get("risk_flags", []),
             explanation=self._build_explanation(
-                skill_score, domain_score, culture_bonus, preference_bonus
+                skill_score, domain_score, soft_skill_score,
+                culture_fit_score, culture_bonus, preference_bonus
             ),
         )
 
+    def _compute_total_score(
+        self,
+        skill_score: float,
+        domain_score: float,
+        soft_skill_score: float | None,
+        culture_fit_score: float | None,
+    ) -> float:
+        """
+        Dynamically weight the score based on which dimensions have data.
+        This prevents penalising users who haven't completed the deep interview
+        while rewarding those who have by incorporating richer signals.
+        """
+        has_soft    = soft_skill_score is not None
+        has_culture = culture_fit_score is not None
+
+        if has_soft and has_culture:
+            return (
+                skill_score       * MatchWeight.SKILLS_FULL +
+                domain_score      * MatchWeight.DOMAIN_FULL +
+                soft_skill_score  * MatchWeight.SOFT_SKILLS +
+                culture_fit_score * MatchWeight.CULTURE_FIT
+            )
+        elif has_culture:
+            return (
+                skill_score       * MatchWeight.SKILLS_CULTURE +
+                domain_score      * MatchWeight.DOMAIN_CULTURE +
+                culture_fit_score * MatchWeight.CULTURE_ONLY
+            )
+        elif has_soft:
+            return (
+                skill_score      * MatchWeight.SKILLS_SOFT +
+                domain_score     * MatchWeight.DOMAIN_SOFT +
+                soft_skill_score * MatchWeight.SOFT_ONLY
+            )
+        else:
+            return skill_score * MatchWeight.SKILLS + domain_score * MatchWeight.DOMAIN
+
     # ──────────────────────────────────────────────────────────────────────────
-    # BASE SCORE COMPONENTS
+    # DIMENSION 1: EVIDENCE-WEIGHTED SKILL SCORE
     # ──────────────────────────────────────────────────────────────────────────
 
     async def _compute_skill_score(self, user_id: str, job_id: str) -> dict:
         """
-        Weighted skill match via MATCHES edges with seniority factor.
+        Evidence-weighted skill match via MATCHES edges.
 
-        For each matched skill pair (Skill → MATCHES → JobSkillRequirement):
-          contribution = importance_weight * seniority_factor
-          seniority_factor = min(user.years / req.min_years, 1.0) if both known, else 1.0
+        contribution = importance_weight × seniority_factor × evidence_weight
 
-        score = sum(contributions) / sum(all job requirement weights)
+        evidence_weight: claimed_only=0.30, mentioned_once=0.50,
+                         project_backed=0.80, multiple_productions=1.00
 
-        Returns: {score, matched: [names], missing: [names]}
+        score = sum(contributions) / sum(all job requirement importance weights)
+
+        This means someone who lists 10 skills they have never used (claimed_only)
+        will score significantly lower than someone with 5 project-backed skills.
         """
-        # Query 1: matched skills via MATCHES edges
         matched_records = await self.client.run_query(
             """
             MATCH (u:User {id: $user_id})-[:HAS_SKILL_CATEGORY]->(:SkillCategory)
@@ -197,11 +230,19 @@ class MatchingEngine:
                    WHEN req.min_years IS NULL OR s.years IS NULL THEN 1.0
                    WHEN s.years >= req.min_years               THEN 1.0
                    ELSE s.years / toFloat(req.min_years)
-                 END AS seniority_factor
+                 END AS seniority_factor,
+                 CASE coalesce(s.evidence_strength, 'unknown')
+                   WHEN 'multiple_productions' THEN $e_multi
+                   WHEN 'project_backed'       THEN $e_proj
+                   WHEN 'mentioned_once'       THEN $e_once
+                   WHEN 'claimed_only'         THEN $e_claim
+                   ELSE $e_unknown
+                 END AS evidence_weight
             RETURN
                 collect(toLower(trim(req.name))) AS matched_names,
-                reduce(acc = 0.0, x IN collect(imp_weight * seniority_factor) | acc + x)
-                    AS matched_weight
+                reduce(acc = 0.0,
+                       x IN collect(imp_weight * seniority_factor * evidence_weight) |
+                       acc + x) AS matched_weight
             """,
             {
                 "user_id": user_id,
@@ -209,10 +250,14 @@ class MatchingEngine:
                 "w_must": SkillImportanceWeight.MUST_HAVE,
                 "w_nice": SkillImportanceWeight.NICE_TO_HAVE,
                 "w_default": SkillImportanceWeight.DEFAULT,
+                "e_multi":   EvidenceWeight.MULTIPLE_PRODUCTIONS,
+                "e_proj":    EvidenceWeight.PROJECT_BACKED,
+                "e_once":    EvidenceWeight.MENTIONED_ONCE,
+                "e_claim":   EvidenceWeight.CLAIMED_ONLY,
+                "e_unknown": EvidenceWeight.UNKNOWN,
             },
         )
 
-        # Query 2: all job requirements (for total weight and missing list)
         all_records = await self.client.run_query(
             """
             OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_SKILL_REQUIREMENTS]->
@@ -241,65 +286,300 @@ class MatchingEngine:
         all_names      = all_records[0]["all_names"] if all_records else []
         total_weight   = all_records[0]["total_weight"] if all_records else 0.0
 
-        matched_set  = set(matched_names)
-        missing      = [n for n in all_names if n not in matched_set]
-        score        = (matched_weight / total_weight) if total_weight > 0 else 0.0
+        matched_set = set(matched_names)
+        missing     = [n for n in all_names if n not in matched_set]
+        score       = (matched_weight / total_weight) if total_weight > 0 else 0.0
 
         return {"score": score, "matched": matched_names, "missing": missing}
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # DIMENSION 2: DEPTH-WEIGHTED DOMAIN SCORE
+    # ──────────────────────────────────────────────────────────────────────────
+
     async def _compute_domain_score(self, user_id: str, job_id: str) -> dict:
         """
-        Domain set intersection score.
+        Domain score with depth weighting.
 
-        Returns: {score, matched: [domain_names], missing: [domain_names]}
+        Each matched domain contributes: depth_weight / total_domains
+        depth weights: deep=1.00, moderate=0.70, shallow=0.40
+
+        Shallow domain experience is no longer equivalent to deep expertise.
         """
         records = await self.client.run_query(
             """
-            // Collect user domains (direct + inferred from projects)
-            OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_DOMAIN_CATEGORY]->
-                  (:DomainCategory)-[:HAS_DOMAIN_FAMILY]->
-                  (:DomainFamily)-[:HAS_DOMAIN]->(d:Domain)
-            WITH collect(toLower(trim(d.name))) AS user_domains
-
-            OPTIONAL MATCH (u2:User {id: $user_id})-[:HAS_PROJECT_CATEGORY]->
-                  (:ProjectCategory)-[:HAS_PROJECT]->(p:Project)-[:IN_DOMAIN]->(pd:Domain)
-            WITH user_domains, collect(toLower(trim(pd.name))) AS project_domains
-            WITH user_domains + project_domains AS all_user_domains
-
-            // Collect job domain requirements
+            // Collect job domain requirements (the denominator)
             OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_DOMAIN_REQUIREMENTS]->
                   (:JobDomainRequirements)-[:HAS_DOMAIN_FAMILY_REQ]->
                   (:JobDomainFamily)-[:REQUIRES_DOMAIN]->(dr:JobDomainRequirement)
-            WITH all_user_domains, collect(toLower(trim(dr.name))) AS job_domains
+            WITH collect({name: toLower(trim(dr.name))}) AS job_domains_raw
 
-            WITH all_user_domains, job_domains,
-                 [d IN job_domains WHERE d IN all_user_domains]     AS matched_domains,
-                 [d IN job_domains WHERE NOT d IN all_user_domains] AS missing_domains
+            // Collect user domains (direct)
+            OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_DOMAIN_CATEGORY]->
+                  (:DomainCategory)-[:HAS_DOMAIN_FAMILY]->
+                  (:DomainFamily)-[:HAS_DOMAIN]->(d:Domain)
+            WITH job_domains_raw,
+                 collect({name: toLower(trim(d.name)), depth: coalesce(d.depth, 'unknown')}) AS direct_domains
 
-            RETURN
-                CASE WHEN size(job_domains) > 0
-                     THEN toFloat(size(matched_domains)) / toFloat(size(job_domains))
-                     ELSE 0.0
-                END AS score,
-                matched_domains AS matched,
-                missing_domains AS missing
+            // Collect user domains inferred from projects
+            OPTIONAL MATCH (u2:User {id: $user_id})-[:HAS_PROJECT_CATEGORY]->
+                  (:ProjectCategory)-[:HAS_PROJECT]->(p:Project)-[:IN_DOMAIN]->(pd:Domain)
+            WITH job_domains_raw, direct_domains,
+                 collect({name: toLower(trim(pd.name)), depth: coalesce(pd.depth, 'unknown')}) AS project_domains
+            WITH job_domains_raw, direct_domains + project_domains AS all_user_domains
+
+            RETURN job_domains_raw, all_user_domains
             """,
             {"user_id": user_id, "job_id": job_id},
         )
-        return records[0] if records else {"score": 0.0, "matched": [], "missing": []}
+
+        if not records:
+            return {"score": 0.0, "matched": [], "missing": []}
+
+        row             = records[0]
+        job_domains_raw = row.get("job_domains_raw") or []
+        user_domains    = row.get("all_user_domains") or []
+
+        if not job_domains_raw:
+            return {"score": 0.0, "matched": [], "missing": []}
+
+        job_names = [d["name"] for d in job_domains_raw]
+        # Build user domain lookup: name → best depth seen
+        user_depth_map: dict[str, str] = {}
+        for ud in user_domains:
+            name  = ud.get("name", "")
+            depth = ud.get("depth", "unknown")
+            # Keep the best depth if the same domain appears multiple times
+            existing = user_depth_map.get(name, "unknown")
+            priority = {"deep": 3, "moderate": 2, "shallow": 1, "unknown": 0}
+            if priority.get(depth, 0) > priority.get(existing, 0):
+                user_depth_map[name] = depth
+
+        matched = []
+        missing = []
+        total_depth_weight = 0.0
+        for jname in job_names:
+            if jname in user_depth_map:
+                matched.append(jname)
+                total_depth_weight += DomainDepthWeight.get(user_depth_map[jname])
+            else:
+                missing.append(jname)
+
+        # Score = sum(depth_weights of matched) / (total_domains × max_depth_weight)
+        # Max possible = each domain matched at full depth = len(job_names) × 1.0
+        score = total_depth_weight / len(job_names) if job_names else 0.0
+
+        return {"score": score, "matched": matched, "missing": missing}
 
     # ──────────────────────────────────────────────────────────────────────────
-    # BONUS SIGNALS (not weighted into total_score)
+    # DIMENSION 3: SOFT SKILL ALIGNMENT SCORE
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def _compute_soft_skill_score(self, user_id: str, job_id: str) -> dict:
+        """
+        Soft skill score based on SoftSkillRequirement nodes (job side) vs
+        ProblemSolvingPattern + Experience.contribution_type + BehavioralInsight (user side).
+
+        Returns None score when job has no SoftSkillRequirements or user has no
+        behavioral data — allowing graceful weight redistribution.
+
+        Also returns behavioral_risk_flags: risk signals from BehavioralInsight nodes
+        that conflict with dealbreaker soft skills.
+        """
+        # Query job soft skill requirements
+        soft_reqs = await self.client.run_query(
+            """
+            OPTIONAL MATCH (j:Job {id: $job_id})-[:REQUIRES_QUALITY]->(s:SoftSkillRequirement)
+            RETURN s.name AS name, s.quality AS quality,
+                   coalesce(s.dealbreaker, false) AS dealbreaker
+            """,
+            {"job_id": job_id},
+        )
+        soft_reqs = [r for r in soft_reqs if r.get("quality")]
+        if not soft_reqs:
+            return {"score": None, "risk_flags": []}
+
+        # Query user patterns and behavioral insights
+        user_patterns = await self.client.run_query(
+            """
+            OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_PATTERN_CATEGORY]->
+                  (:PatternCategory)-[:HAS_PATTERN]->(p:ProblemSolvingPattern)
+            RETURN toLower(trim(p.pattern)) AS pattern
+            """,
+            {"user_id": user_id},
+        )
+        user_pattern_set = {r["pattern"] for r in user_patterns if r.get("pattern")}
+
+        # Also pull ownership signals from experience contribution_type
+        exp_contributions = await self.client.run_query(
+            """
+            OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_EXPERIENCE_CATEGORY]->
+                  (:ExperienceCategory)-[:HAS_EXPERIENCE]->(e:Experience)
+            RETURN coalesce(e.contribution_type, 'unclear') AS contribution_type
+            """,
+            {"user_id": user_id},
+        )
+        has_leadership = any(
+            r["contribution_type"] in ("sole_engineer", "tech_lead")
+            for r in exp_contributions
+        )
+        if has_leadership:
+            # Ownership is evidenced by leading/sole work
+            user_pattern_set.add("_has_ownership_evidence")
+
+        # Pull behavioral insights for risk flag detection
+        behavior_rows = await self.client.run_query(
+            """
+            OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_BEHAVIORAL_INSIGHT]->(b:BehavioralInsight)
+            RETURN b.insight_type AS insight_type, b.trigger AS trigger, b.implication AS implication
+            """,
+            {"user_id": user_id},
+        )
+        risk_behavior = [
+            r for r in behavior_rows
+            if r.get("insight_type") in BEHAVIORAL_RISK_TYPES
+        ]
+
+        if not user_pattern_set and not has_leadership:
+            # No behavioral data at all — cannot score
+            return {"score": None, "risk_flags": []}
+
+        total = len(soft_reqs)
+        matched_weight = 0.0
+        risk_flags: list[str] = []
+
+        for req in soft_reqs:
+            quality      = (req.get("quality") or "").lower()
+            dealbreaker  = req.get("dealbreaker", False)
+            patterns_needed = [p.lower() for p in SOFT_SKILL_TO_PATTERN.get(quality, [])]
+
+            # Ownership quality: also accept _has_ownership_evidence signal
+            if quality == "ownership" and "_has_ownership_evidence" in user_pattern_set:
+                patterns_needed = patterns_needed + ["_has_ownership_evidence"]
+
+            has_evidence = any(p in user_pattern_set for p in patterns_needed)
+
+            # Check if any risk behavior conflicts with this requirement
+            if not has_evidence and risk_behavior and dealbreaker:
+                risk_flags.append(
+                    f"Behavioral signal conflicts with '{quality}' requirement "
+                    f"(dealbreaker): {risk_behavior[0].get('implication', 'push-back pattern observed')}"
+                )
+                matched_weight += 0.0  # no credit for dealbreaker with risk signal
+            elif has_evidence:
+                matched_weight += 1.0
+            else:
+                matched_weight += 0.5  # neutral — no data either way
+
+        score = matched_weight / total if total > 0 else None
+
+        return {"score": score, "risk_flags": risk_flags}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # DIMENSION 4: CULTURE FIT SCORE (digital twin alignment)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def _compute_culture_fit_score(self, user_id: str, job_id: str) -> dict:
+        """
+        Culture fit score based on CultureIdentity (user) vs TeamCultureIdentity (job).
+
+        Returns None score when either side lacks digital twin culture data,
+        allowing graceful weight redistribution to technical dimensions.
+
+        Matching axes:
+          1. pace_preference vs TeamCultureIdentity.pace
+          2. feedback_preference vs TeamCultureIdentity.feedback_culture
+          3. leadership_style vs TeamCultureIdentity.management_style
+          4. energy_drains NOT overlapping with TeamCultureIdentity.anti_patterns
+          5. team_size_preference vs TeamComposition.team_size (when available)
+        """
+        import json as _j
+
+        user_culture = await self.client.run_query(
+            """
+            OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_CULTURE_IDENTITY]->(c:CultureIdentity)
+            RETURN c.team_size_preference AS team_size_preference,
+                   c.leadership_style     AS leadership_style,
+                   c.feedback_preference  AS feedback_preference,
+                   c.pace_preference      AS pace_preference,
+                   c.energy_drains        AS energy_drains
+            """,
+            {"user_id": user_id},
+        )
+        job_culture = await self.client.run_query(
+            """
+            OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_TEAM_CULTURE]->(tc:TeamCultureIdentity)
+            RETURN tc.management_style    AS management_style,
+                   tc.feedback_culture   AS feedback_culture,
+                   tc.pace               AS pace,
+                   tc.anti_patterns      AS anti_patterns,
+                   tc.decision_making    AS decision_making
+            """,
+            {"job_id": job_id},
+        )
+
+        if not user_culture or not user_culture[0].get("pace_preference"):
+            return {"score": None}
+        if not job_culture or not job_culture[0].get("pace"):
+            return {"score": None}
+
+        uc = user_culture[0]
+        jc = job_culture[0]
+
+        checks = 0
+        hits   = 0.0
+
+        # 1. Pace
+        user_pace = (uc.get("pace_preference") or "").lower()
+        job_pace  = (jc.get("pace") or "").lower()
+        if user_pace and job_pace:
+            checks += 1
+            compatible = CULTURE_FIELD_MAP["pace"].get(user_pace, [])
+            hits += 1.0 if job_pace in compatible else 0.0
+
+        # 2. Feedback
+        user_fb = (uc.get("feedback_preference") or "").lower()
+        job_fb  = (jc.get("feedback_culture") or "").lower()
+        if user_fb and job_fb:
+            checks += 1
+            compatible = CULTURE_FIELD_MAP["feedback"].get(user_fb, [])
+            hits += 1.0 if job_fb in compatible else 0.0
+
+        # 3. Leadership style vs management style
+        user_lead = (uc.get("leadership_style") or "").lower()
+        job_mgmt  = (jc.get("management_style") or "").lower()
+        if user_lead and job_mgmt:
+            checks += 1
+            compatible = CULTURE_FIELD_MAP["management"].get(user_lead, [])
+            hits += 1.0 if job_mgmt in compatible else 0.0
+
+        # 4. Energy drains vs anti-patterns (overlap = bad = lower score)
+        raw_drains       = uc.get("energy_drains") or "[]"
+        raw_anti         = jc.get("anti_patterns") or "[]"
+        try:
+            drains   = _j.loads(raw_drains) if isinstance(raw_drains, str) else raw_drains
+            anti     = _j.loads(raw_anti)   if isinstance(raw_anti, str)   else raw_anti
+        except Exception:
+            drains, anti = [], []
+
+        if drains and anti:
+            drains_norm = {d.lower().strip() for d in drains}
+            anti_norm   = {a.lower().strip() for a in anti}
+            overlap     = drains_norm & anti_norm
+            checks += 1
+            # No overlap = full hit (user's drains don't match job's anti-patterns)
+            hits += 1.0 if not overlap else max(0.0, 1.0 - len(overlap) / max(len(drains_norm), 1))
+
+        score = (hits / checks) if checks > 0 else None
+        return {"score": score}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LEGACY BONUS SIGNALS (kept for backwards compat, not in total_score)
     # ──────────────────────────────────────────────────────────────────────────
 
     async def _compute_culture_bonus(self, user_id: str, job_id: str) -> dict:
         """
-        Culture fit bonus: ratio of job work styles that match user work_style preferences.
-
-        Uses synonym normalization (WORK_STYLE_SYNONYMS) so that e.g. "remote"
-        matches "remote-first", "high-autonomy" matches "autonomous", etc.
-
-        Returns: {bonus} — 0.0 if job has no work styles or user has none
+        Legacy culture bonus: ratio of job WorkStyle nodes that match user Preference(work_style).
+        Uses synonym normalization. Kept as supplementary signal alongside culture_fit_score.
         """
         records = await self.client.run_query(
             """
@@ -316,23 +596,17 @@ class MatchingEngine:
         )
         if not records:
             return {"bonus": 0.0}
-
         user_raw = records[0]["user_styles"] or []
         job_raw  = records[0]["job_styles"]  or []
         if not job_raw:
             return {"bonus": 0.0}
-
         user_canonical = {normalize_work_style(s) for s in user_raw}
         matched = sum(1 for js in job_raw if normalize_work_style(js) in user_canonical)
         return {"bonus": round(matched / len(job_raw), 3)}
 
     async def _compute_preference_bonus(self, user_id: str, job_id: str) -> dict:
         """
-        Preference fit bonus: ratio of checkable user preferences that the job satisfies.
-        Checks: remote_work vs j.remote_policy (with synonym normalization),
-                company_size vs j.company_size (exact canonical match).
-
-        Returns: {bonus} — 0.0 if user has no checkable preferences
+        Preference bonus: remote_work + company_size match ratio.
         """
         records = await self.client.run_query(
             """
@@ -350,13 +624,11 @@ class MatchingEngine:
         )
         if not records or not records[0]["user_prefs"]:
             return {"bonus": 0.0}
-
         row   = records[0]
         prefs = row["user_prefs"]
         matched = 0
         for pref in prefs:
             if pref["type"] == "remote_work":
-                # Normalize both sides so "remote-first" == "remote" etc.
                 if normalize_work_style(pref["value"]) == normalize_work_style(row["remote_policy"] or ""):
                     matched += 1
             elif pref["type"] == "company_size":
@@ -373,12 +645,7 @@ class MatchingEngine:
     ) -> list[dict]:
         """
         Find explicit graph paths connecting a user to a job via MATCHES edges.
-
-        Traverses: User → skill/domain hierarchy → Skill/Domain
-                   → MATCHES → JobSkillRequirement/JobDomainRequirement
-                   → job hierarchy → Job
-
-        Every path represents a concrete match reason traceable in the graph.
+        Every path represents a concrete, auditable match reason.
         """
         records = await self.client.run_query(
             """
@@ -416,18 +683,14 @@ class MatchingEngine:
             """,
             {"user_id": user_id, "job_id": job_id, "limit": limit},
         )
-
         paths = []
         for record in records:
-            names = record.get("node_names", [])
-            rels  = record.get("rel_types", [])
+            names    = record.get("node_names", [])
+            rels     = record.get("rel_types", [])
             path_str = " → ".join(
                 part for pair in zip(names, rels + [""]) for part in pair if part
             )
-            paths.append({
-                "path": path_str,
-                "length": record.get("path_length"),
-            })
+            paths.append({"path": path_str, "length": record.get("path_length")})
         return paths
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -436,20 +699,18 @@ class MatchingEngine:
 
     async def gather_match_context(self, user_id: str, job_id: str) -> dict:
         """
-        Pull rich contextual data for a user-job pair to power a detailed LLM explanation.
+        Pull full contextual data for a user-job pair to power a detailed LLM explanation.
 
-        Returns a dict with:
-          - matched_skills_rich: list of dicts (skill, level, years, evidence_strength,
-                                  importance, min_years, usage_contexts, usage_what, outcomes)
-          - missing_must_have:   list of dicts (skill, min_years) for must_have gaps only
-          - missing_nice:        list of skill names for nice_to_have gaps
-          - assessment:          dict from CriticalAssessment node (parsed JSON fields)
-          - job_meta:            dict (exp_min, company_size, remote_policy)
-          - matched_domains_rich: list of dicts (domain, depth, years)
+        Now includes the complete digital twin portrait on both sides:
+          User: skills+evidence, domains+depth, assessment, motivation, goals,
+                culture identity, behavioral insights, anecdotes
+          Job:  skill reqs, domain reqs, soft skill reqs, team culture,
+                role context, hiring goals, success metrics, interview signals
         """
         import json as _j
 
-        # Query 1: matched skills with evidence details + how they were used
+        # ── User side ──────────────────────────────────────────────────────────
+
         matched_rich = await self.client.run_query(
             """
             MATCH (u:User {id: $user_id})-[:HAS_SKILL_CATEGORY]->(:SkillCategory)
@@ -459,23 +720,23 @@ class MatchingEngine:
                   <-[:HAS_SKILL_FAMILY_REQ]-(:JobSkillRequirements)
                   <-[:HAS_SKILL_REQUIREMENTS]-(j:Job {id: $job_id})
             OPTIONAL MATCH (p:Project {user_id: $user_id})-[demo:DEMONSTRATES_SKILL]->(s)
-            RETURN s.name            AS skill,
-                   s.level           AS level,
-                   s.years           AS years,
+            OPTIONAL MATCH (s)-[:GROUNDED_IN]->(anec:Anecdote)
+            RETURN s.name              AS skill,
+                   s.level             AS level,
+                   s.years             AS years,
                    s.evidence_strength AS evidence_strength,
-                   req.importance    AS importance,
-                   req.min_years     AS min_years,
+                   req.importance      AS importance,
+                   req.min_years       AS min_years,
                    collect(DISTINCT demo.context)[0..3] AS usage_contexts,
                    collect(DISTINCT demo.what)[0..2]    AS usage_what,
-                   collect(DISTINCT demo.outcome)[0..2] AS outcomes
-            ORDER BY
-              CASE req.importance WHEN 'must_have' THEN 0 ELSE 1 END,
-              s.years DESC
+                   collect(DISTINCT demo.outcome)[0..2] AS outcomes,
+                   collect(DISTINCT anec.situation)[0..1] AS anecdote_situations,
+                   collect(DISTINCT anec.result)[0..1]    AS anecdote_results
+            ORDER BY CASE req.importance WHEN 'must_have' THEN 0 ELSE 1 END, s.years DESC
             """,
             {"user_id": user_id, "job_id": job_id},
         )
 
-        # Query 2: all job requirement names (to compute missing nice_to_have list)
         all_reqs = await self.client.run_query(
             """
             MATCH (j:Job {id: $job_id})-[:HAS_SKILL_REQUIREMENTS]->(:JobSkillRequirements)
@@ -493,25 +754,16 @@ class MatchingEngine:
             for r in all_reqs
             if not r["matched"] and r["importance"] == "must_have"
         ]
-        missing_nice = [
-            r["skill"]
-            for r in all_reqs
-            if not r["matched"] and r["importance"] != "must_have"
-        ]
+        missing_nice = [r["skill"] for r in all_reqs if not r["matched"] and r["importance"] != "must_have"]
 
-        # Query 3: critical assessment
         assessment_rows = await self.client.run_query(
             """
             MATCH (u:User {id: $user_id})-[:HAS_ASSESSMENT]->(a:CriticalAssessment)
-            RETURN a.overall_signal       AS overall_signal,
-                   a.seniority_assessment AS seniority_assessment,
-                   a.depth_vs_breadth     AS depth_vs_breadth,
-                   a.candidate_identity   AS candidate_identity,
-                   a.honest_summary       AS honest_summary,
-                   a.genuine_strengths    AS genuine_strengths,
-                   a.red_flags            AS red_flags,
-                   a.inflated_skills      AS inflated_skills,
-                   a.five_w_h_summary     AS five_w_h_summary
+            RETURN a.overall_signal AS overall_signal, a.seniority_assessment AS seniority_assessment,
+                   a.depth_vs_breadth AS depth_vs_breadth, a.candidate_identity AS candidate_identity,
+                   a.honest_summary AS honest_summary, a.genuine_strengths AS genuine_strengths,
+                   a.red_flags AS red_flags, a.inflated_skills AS inflated_skills,
+                   a.five_w_h_summary AS five_w_h_summary
             """,
             {"user_id": user_id},
         )
@@ -532,19 +784,38 @@ class MatchingEngine:
                     pass
             assessment = raw
 
-        # Query 4: job metadata
-        job_meta_rows = await self.client.run_query(
-            """
-            MATCH (j:Job {id: $job_id})
-            RETURN j.experience_years_min AS exp_min,
-                   j.company_size         AS company_size,
-                   j.remote_policy        AS remote_policy
-            """,
-            {"job_id": job_id},
+        # User digital twin — human portrait
+        motivations = await self.client.run_query(
+            "OPTIONAL MATCH (u:User {id: $user_id})-[:MOTIVATED_BY]->(m:Motivation) "
+            "RETURN m.category AS category, m.strength AS strength, m.evidence AS evidence "
+            "ORDER BY m.strength DESC LIMIT 3",
+            {"user_id": user_id},
         )
-        job_meta = dict(job_meta_rows[0]) if job_meta_rows else {}
-
-        # Query 5: matched domains with depth
+        values = await self.client.run_query(
+            "OPTIONAL MATCH (u:User {id: $user_id})-[:HOLDS_VALUE]->(v:Value) "
+            "RETURN v.name AS name, v.priority_rank AS priority_rank, v.evidence AS evidence "
+            "ORDER BY v.priority_rank LIMIT 5",
+            {"user_id": user_id},
+        )
+        goals = await self.client.run_query(
+            "OPTIONAL MATCH (u:User {id: $user_id})-[:ASPIRES_TO]->(g:Goal) "
+            "RETURN g.type AS type, g.description AS description, "
+            "g.timeframe_years AS timeframe_years, g.clarity_level AS clarity_level",
+            {"user_id": user_id},
+        )
+        user_culture = await self.client.run_query(
+            "OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_CULTURE_IDENTITY]->(c:CultureIdentity) "
+            "RETURN c.team_size_preference AS team_size_preference, "
+            "c.leadership_style AS leadership_style, c.feedback_preference AS feedback_preference, "
+            "c.pace_preference AS pace_preference, c.energy_sources AS energy_sources, "
+            "c.energy_drains AS energy_drains, c.conflict_style AS conflict_style",
+            {"user_id": user_id},
+        )
+        behavioral_insights = await self.client.run_query(
+            "OPTIONAL MATCH (u:User {id: $user_id})-[:HAS_BEHAVIORAL_INSIGHT]->(b:BehavioralInsight) "
+            "RETURN b.insight_type AS insight_type, b.trigger AS trigger, b.implication AS implication",
+            {"user_id": user_id},
+        )
         domains_rich = await self.client.run_query(
             """
             MATCH (u:User {id: $user_id})-[:HAS_DOMAIN_CATEGORY]->(:DomainCategory)
@@ -559,13 +830,77 @@ class MatchingEngine:
             {"user_id": user_id, "job_id": job_id},
         )
 
+        # ── Job side ───────────────────────────────────────────────────────────
+
+        job_meta_rows = await self.client.run_query(
+            "MATCH (j:Job {id: $job_id}) RETURN j.experience_years_min AS exp_min, "
+            "j.company_size AS company_size, j.remote_policy AS remote_policy, "
+            "j.title AS title, j.company AS company",
+            {"job_id": job_id},
+        )
+        job_meta = dict(job_meta_rows[0]) if job_meta_rows else {}
+
+        soft_skill_reqs = await self.client.run_query(
+            "OPTIONAL MATCH (j:Job {id: $job_id})-[:REQUIRES_QUALITY]->(s:SoftSkillRequirement) "
+            "RETURN s.name AS name, s.quality AS quality, s.expectation AS expectation, "
+            "s.evidence_indicator AS evidence_indicator, s.dealbreaker AS dealbreaker",
+            {"job_id": job_id},
+        )
+        job_team_culture = await self.client.run_query(
+            "OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_TEAM_CULTURE]->(tc:TeamCultureIdentity) "
+            "RETURN tc.decision_making AS decision_making, tc.communication_style AS communication_style, "
+            "tc.feedback_culture AS feedback_culture, tc.pace AS pace, tc.work_life AS work_life, "
+            "tc.management_style AS management_style, tc.team_values AS team_values, "
+            "tc.anti_patterns AS anti_patterns",
+            {"job_id": job_id},
+        )
+        role_context = await self.client.run_query(
+            "OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_ROLE_CONTEXT]->(r:RoleContext) "
+            "RETURN r.owns_what AS owns_what, r.first_90_days AS first_90_days, "
+            "r.growth_trajectory AS growth_trajectory, r.why_role_open AS why_role_open",
+            {"job_id": job_id},
+        )
+        hiring_goals = await self.client.run_query(
+            "OPTIONAL MATCH (j:Job {id: $job_id})-[:DRIVEN_BY]->(h:HiringGoal) "
+            "RETURN h.gap_being_filled AS gap_being_filled, h.urgency AS urgency, "
+            "h.dealbreaker_absence AS dealbreaker_absence, h.ideal_background AS ideal_background",
+            {"job_id": job_id},
+        )
+        success_metrics = await self.client.run_query(
+            "OPTIONAL MATCH (j:Job {id: $job_id})-[:DEFINES_SUCCESS_BY]->(m:SuccessMetric) "
+            "RETURN m.at_90_days AS at_90_days, m.at_1_year AS at_1_year, "
+            "m.key_deliverables AS key_deliverables",
+            {"job_id": job_id},
+        )
+        team_composition = await self.client.run_query(
+            "OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_TEAM_COMPOSITION]->(t:TeamComposition) "
+            "RETURN t.team_size AS team_size, t.team_makeup AS team_makeup, "
+            "t.hiring_for_gap AS hiring_for_gap",
+            {"job_id": job_id},
+        )
+
         return {
-            "matched_skills_rich": [dict(r) for r in matched_rich],
-            "missing_must_have": missing_must,
-            "missing_nice": missing_nice,
-            "assessment": assessment,
-            "job_meta": job_meta,
-            "matched_domains_rich": [dict(r) for r in domains_rich],
+            # User technical
+            "matched_skills_rich":   [dict(r) for r in matched_rich],
+            "missing_must_have":     missing_must,
+            "missing_nice":          missing_nice,
+            "matched_domains_rich":  [dict(r) for r in domains_rich],
+            # User assessment
+            "assessment":            assessment,
+            # User human portrait
+            "motivations":           [dict(r) for r in motivations if r.get("category")],
+            "values":                [dict(r) for r in values if r.get("name")],
+            "goals":                 [dict(r) for r in goals if r.get("description")],
+            "user_culture":          dict(user_culture[0]) if user_culture and user_culture[0].get("pace_preference") else {},
+            "behavioral_insights":   [dict(r) for r in behavioral_insights if r.get("insight_type")],
+            # Job context
+            "job_meta":              job_meta,
+            "soft_skill_reqs":       [dict(r) for r in soft_skill_reqs if r.get("quality")],
+            "job_team_culture":      dict(job_team_culture[0]) if job_team_culture and job_team_culture[0].get("pace") else {},
+            "role_context":          dict(role_context[0]) if role_context and role_context[0].get("owns_what") else {},
+            "hiring_goals":          dict(hiring_goals[0]) if hiring_goals and hiring_goals[0].get("gap_being_filled") else {},
+            "success_metrics":       dict(success_metrics[0]) if success_metrics and success_metrics[0].get("at_90_days") else {},
+            "team_composition":      dict(team_composition[0]) if team_composition and team_composition[0].get("team_size") else {},
         }
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -576,29 +911,44 @@ class MatchingEngine:
         self,
         skill_score: float,
         domain_score: float,
+        soft_skill_score: float | None,
+        culture_fit_score: float | None,
         culture_bonus: float,
         preference_bonus: float,
     ) -> str:
         parts = []
 
         if skill_score >= 0.8:
-            parts.append("Strong skill alignment")
+            parts.append("Strong evidence-weighted skill alignment")
         elif skill_score >= 0.5:
             parts.append("Moderate skill overlap")
         elif skill_score > 0:
-            parts.append("Limited skill match")
+            parts.append("Limited skill match (check evidence depth)")
         else:
             parts.append("No skill overlap found")
 
         if domain_score >= 0.7:
-            parts.append("domain expertise aligns well")
+            parts.append("deep domain expertise aligns")
         elif domain_score >= 0.4:
             parts.append("partial domain match")
 
-        if culture_bonus >= 0.7:
-            parts.append("strong culture fit")
-        elif culture_bonus > 0:
-            parts.append("partial culture fit")
+        if soft_skill_score is not None:
+            if soft_skill_score >= 0.8:
+                parts.append("strong soft skill alignment")
+            elif soft_skill_score >= 0.5:
+                parts.append("partial soft skill match")
+            else:
+                parts.append("soft skill gaps detected")
+
+        if culture_fit_score is not None:
+            if culture_fit_score >= 0.8:
+                parts.append("strong culture fit")
+            elif culture_fit_score >= 0.5:
+                parts.append("partial culture alignment")
+            else:
+                parts.append("culture mismatch signals")
+        elif culture_bonus >= 0.7:
+            parts.append("work style alignment")
 
         if preference_bonus == 1.0:
             parts.append("preferences fully satisfied")

@@ -73,10 +73,34 @@ class RelType(str, Enum):
 
 
 class MatchWeight:
-    """Weights for the two base scoring dimensions. Must sum to 1.0.
-    Culture and preferences are bonus signals, not weighted dimensions."""
-    SKILLS: float = 0.65
-    DOMAIN: float = 0.35
+    """
+    Dimension weights for the four-axis scoring model.
+    Active dimensions are selected at runtime based on available graph data.
+
+    When all four dimensions have data:
+      Skills 45% + Domain 20% + SoftSkills 20% + CultureFit 15% = 100%
+
+    When soft skill or culture data is missing, weights fall back gracefully:
+      No soft + no culture: Skills 65% + Domain 35%       (current behaviour, backwards compat)
+      Has culture, no soft: Skills 55% + Domain 25% + Culture 20%
+      Has soft, no culture: Skills 55% + Domain 25% + Soft 20%
+    """
+    # Full 4-dimension weights
+    SKILLS_FULL:   float = 0.45
+    DOMAIN_FULL:   float = 0.20
+    SOFT_SKILLS:   float = 0.20
+    CULTURE_FIT:   float = 0.15
+    # Fallback when only culture is available (no soft data)
+    SKILLS_CULTURE: float = 0.55
+    DOMAIN_CULTURE: float = 0.25
+    CULTURE_ONLY:   float = 0.20
+    # Fallback when only soft skills are available (no culture data)
+    SKILLS_SOFT:   float = 0.55
+    DOMAIN_SOFT:   float = 0.25
+    SOFT_ONLY:     float = 0.20
+    # Legacy fallback when neither is available
+    SKILLS:        float = 0.65
+    DOMAIN:        float = 0.35
 
 
 class SkillImportanceWeight:
@@ -84,6 +108,91 @@ class SkillImportanceWeight:
     MUST_HAVE: float = 1.0
     NICE_TO_HAVE: float = 0.5
     DEFAULT: float = 0.8
+
+
+class EvidenceWeight:
+    """
+    Multipliers applied to skill score contributions based on evidence_strength.
+    A skill with claimed_only evidence is worth 30% of the same skill backed by
+    multiple production deployments. This is the critical correction to keyword matching.
+    """
+    MULTIPLE_PRODUCTIONS: float = 1.00
+    PROJECT_BACKED:       float = 0.80
+    MENTIONED_ONCE:       float = 0.50
+    CLAIMED_ONLY:         float = 0.30
+    UNKNOWN:              float = 0.40  # default when evidence is not recorded
+
+    @classmethod
+    def get(cls, evidence_strength: str | None) -> float:
+        mapping = {
+            "multiple_productions": cls.MULTIPLE_PRODUCTIONS,
+            "project_backed":       cls.PROJECT_BACKED,
+            "mentioned_once":       cls.MENTIONED_ONCE,
+            "claimed_only":         cls.CLAIMED_ONLY,
+        }
+        return mapping.get(evidence_strength or "", cls.UNKNOWN)
+
+
+class DomainDepthWeight:
+    """
+    Multipliers applied to domain score contributions based on depth.
+    Shallow domain knowledge is not equivalent to deep expertise.
+    """
+    DEEP:     float = 1.00
+    MODERATE: float = 0.70
+    SHALLOW:  float = 0.40
+    UNKNOWN:  float = 0.55
+
+    @classmethod
+    def get(cls, depth: str | None) -> float:
+        mapping = {
+            "deep":     cls.DEEP,
+            "moderate": cls.MODERATE,
+            "shallow":  cls.SHALLOW,
+        }
+        return mapping.get(depth or "", cls.UNKNOWN)
+
+
+# Maps job SoftSkillRequirement.quality values to user ProblemSolvingPattern names
+# that serve as evidence for that quality. Used in soft skill scoring.
+SOFT_SKILL_TO_PATTERN: dict[str, list[str]] = {
+    "ownership":          ["systems_thinker", "data-driven", "performance-oriented"],
+    "accountability":     ["systems_thinker", "data-driven"],
+    "initiative":         ["systems_thinker", "performance-oriented"],
+    "communication":      ["collaborative", "user-focused"],
+    "mentorship":         ["collaborative"],
+    "conflict_resolution":["collaborative", "systems_thinker"],
+    "cross_functional":   ["collaborative", "user-focused"],
+    "documentation":      ["detail-oriented", "systems_thinker"],
+    "estimation":         ["data-driven", "systems_thinker"],
+}
+
+# BehavioralInsight types that are risk signals for soft skill requirements
+BEHAVIORAL_RISK_TYPES: frozenset[str] = frozenset({
+    "push_back", "avoidance", "deflection", "inconsistency",
+})
+
+# Mapping from CultureIdentity fields to TeamCultureIdentity fields for culture fit scoring
+CULTURE_FIELD_MAP = {
+    # (user_field, user_value, job_field, job_value) → compatible
+    "pace": {
+        "sprint":      ["sprint"],
+        "steady":      ["steady"],
+        "deliberate":  ["deliberate"],
+    },
+    "feedback": {
+        "frequent_small":  ["frequent", "blunt"],
+        "milestone_big":   ["sparse", "diplomatic"],
+        "self_directed":   ["sparse"],
+    },
+    "management": {
+        # CultureIdentity.leadership_style vs TeamCultureIdentity.management_style
+        "servant":      ["hands_on", "coaching"],
+        "invisible":    ["hands_off"],
+        "directive":    ["hands_on"],
+        "collaborative":["coaching", "hands_off"],
+    },
+}
 
 
 # Skill taxonomy used in extraction prompts to guide Gemini categorization
