@@ -2,12 +2,18 @@
 
 ## Vision
 
-The job recommender does not store a resume. It builds a **digital twin** — a living graph
-portrait of the person behind the resume: what drives them, how they think, the real stories
-behind their work, and where they are headed.
+The system builds two digital twins that match each other — not a resume against a job description,
+but a **portrait of a person** against a **portrait of a role**.
 
-When a recruiter views a matched candidate, they should know not just what the person has built,
-but who they are. The graph is the person.
+**Candidate twin** — who the person IS: technical skills with stories, motivation, values, culture
+identity, behavioral signals, 5-year goal.
+
+**Job twin** — what the role ACTUALLY IS: not the job description, but the team composition,
+what the person will own, how success is measured, the culture of the team, and the qualities
+that are non-negotiable.
+
+When both sides are deeply profiled, matching becomes precise: not "does their Kubernetes match
+our Kubernetes requirement" but "does who they are fit what this team actually needs."
 
 ---
 
@@ -264,11 +270,179 @@ When a recruiter views a matched candidate, they get:
 
 ---
 
+---
+
+## Job Profile (Recruiter Twin)
+
+### Layer 1 — Technical Requirements (pre-existing)
+
+| Node | Purpose |
+|------|---------|
+| `JobSkillRequirement` | Required skill with importance (must_have/nice_to_have) and min_years |
+| `JobDomainRequirement` | Required domain with min_years |
+| `WorkStyle` | Culture signals: async-first, fast-paced, high-autonomy, collaborative |
+
+### Layer 2 — Role Portrait (new)
+
+| Node | Purpose |
+|------|---------|
+| `TeamComposition` | Who is already on the team, what gap this hire fills |
+| `RoleContext` | What the person will own, first 30/90 days, growth trajectory, why role is open |
+| `HiringGoal` | Urgency, timeline, the gap being filled, dealbreakers |
+| `SoftSkillRequirement` | Ownership, accountability, communication — with behavioral evidence indicators |
+| `TeamCultureIdentity` | How the team actually works: decision-making, feedback, pace, anti-patterns |
+| `SuccessMetric` | What good looks like at 30/90/365 days |
+| `InterviewSignal` | Green flags and red flags the recruiter screens for |
+| `BehavioralInsight` | Recruiter's own conversation patterns — recorded same as candidate |
+
+### New Job Relationships
+
+```
+Job ──HAS_TEAM_COMPOSITION──► TeamComposition
+Job ──HAS_ROLE_CONTEXT────────► RoleContext
+Job ──DRIVEN_BY──────────────► HiringGoal
+Job ──REQUIRES_QUALITY───────► SoftSkillRequirement  (multiple)
+Job ──HAS_TEAM_CULTURE───────► TeamCultureIdentity
+Job ──DEFINES_SUCCESS_BY─────► SuccessMetric
+Job ──SCREENS_FOR────────────► InterviewSignal  (multiple)
+Job ──HAS_BEHAVIORAL_INSIGHT─► BehavioralInsight  (recruiter signals)
+```
+
+### Job Node Schemas
+
+**TeamComposition**
+```
+team_size          — integer
+team_makeup        — "2 senior backend, 1 EM, 1 data eng, 2 frontend"
+reporting_to       — "VP Engineering"
+hiring_for_gap     — "no one owns observability right now"
+existing_strengths — "strong on distributed systems"
+```
+
+**RoleContext**
+```
+first_30_days     — what the person will do in their first month
+first_90_days     — what success looks like at 3 months
+owns_what         — what they actually own end-to-end
+reports_to        — who they report to
+growth_trajectory — IC path or management, timeline
+why_role_open     — scaling | replacement | new_capability | backfill
+```
+
+**HiringGoal**
+```
+urgency             — critical | growing | strategic
+timeline            — "need someone in 30 days"
+gap_being_filled    — the real problem this hire solves
+ideal_background    — what background would make this person exceptional
+dealbreaker_absence — what missing thing is a hard no
+```
+
+**SoftSkillRequirement** — the most important one
+```
+quality            — ownership | accountability | initiative | communication
+                     | mentorship | conflict_resolution | cross_functional
+                     | documentation | estimation
+expectation        — what this looks like day-to-day ("operates without hand-holding")
+evidence_indicator — what they would SEE if the person has this quality
+                     ("proactively flags risks before asked")
+dealbreaker        — true | false
+```
+
+**TeamCultureIdentity**
+```
+decision_making    — consensus | top_down | distributed | data_driven
+communication_style — async_first | high_meeting | documentation_heavy | verbal
+feedback_culture   — blunt | diplomatic | frequent | sparse
+pace               — sprint | steady | deliberate
+work_life          — startup_hours | sustainable | flexible
+management_style   — hands_on | hands_off | coaching
+team_values        — JSON array ["shipping fast", "code quality", "learning"]
+anti_patterns      — JSON array ["needs constant direction", "can't handle ambiguity"]
+```
+
+**SuccessMetric**
+```
+at_30_days        — what success looks like in month 1
+at_90_days        — what success looks like in month 3
+at_1_year         — what success looks like at 1 year
+key_deliverables  — JSON array of concrete expected outputs
+how_measured      — how performance is actually evaluated
+```
+
+**InterviewSignal**
+```
+signal_type        — green_flag | red_flag
+what_to_watch_for  — specific behavior to observe
+why_it_matters     — why this signal matters for this role
+```
+
+---
+
+## The Recruiter Interview
+
+The recruiter interview is the exact mirror of the candidate interview.
+Same rules, same mental models, different goal.
+
+### What the Recruiter Interview Digs Into
+
+| Dimension | Questions |
+|-----------|-----------|
+| **Team composition** | "Who will this person work with every day?" |
+| **Ownership clarity** | "When something breaks at 2am — is it their pager?" |
+| **Why role is open** | "Is this a new role or did someone leave? What did they struggle with?" |
+| **Soft skills as behaviors** | "Describe the last person who had strong ownership. What did they do?" |
+| **Success definition** | "What do you see at 90 days that tells you this was the right hire?" |
+| **Team culture** | "What kind of person has left your team, and why?" |
+| **Interview signals** | "What would make you reject someone who looks great on paper?" |
+
+### Mental Models Applied to Job Probing
+
+**First Principles** — Strip away the job description. What is the actual problem?
+> "If you couldn't hire anyone, what would break on your team in 3 months?"
+
+**Second Order Thinking** — What will this hire cause downstream?
+> "How will the rest of the team change once this person joins?"
+> "Does hiring a senior here create a bottleneck for the juniors?"
+
+**Inversion** — Ask what failure looks like.
+> "What made your last bad hire a bad hire?"
+> "What would make you fire this person in 6 months?"
+> "What would make them quit in 6 months?"
+
+**Occam's Razor** — Long requirement lists hide the real non-negotiables.
+> "You listed 12 requirements. If you could only keep 3, which ones?"
+
+**5W+H on every skill requirement:**
+- WHO uses it — the hire or the whole team?
+- WHAT for — building, maintaining, or designing?
+- WHEN — daily, occasionally, or just at the start?
+- WHERE — which part of the stack/product?
+- WHY — what breaks if they don't have it?
+- HOW deeply — deep expert or practical working knowledge?
+
+---
+
+## Symmetric Match: Twin vs Twin
+
+When both profiles are deep, the match between them becomes qualitative, not just keyword-based:
+
+| Candidate Signal | Job Signal | Match |
+|-----------------|-----------|-------|
+| `Motivation: autonomy_seeking` | `TeamCultureIdentity: management_style=hands_off` | Strong culture fit |
+| `CultureIdentity: conflict_style=direct` | `TeamCultureIdentity: feedback_culture=blunt` | Communication match |
+| `Goal: 5_year → lead infra` | `RoleContext: growth_trajectory=IC path in 18 months` | Aspiration alignment |
+| `BehavioralInsight: avoidance on team questions` | `SoftSkillRequirement: cross_functional, dealbreaker=true` | Risk flag |
+| `Anecdote: K8s Migration` | `HiringGoal: gap=no one owns infra` | Narrative fit |
+
+---
+
 ## File Reference
 
 | File | Change |
 |------|--------|
 | `models/schemas.py` | Added `GraphImpactItem`, `GraphImpactBanner`; updated `GraphMutationProposal` with `graph_impact_banner`; updated `EditSessionResponse` with `interview_banner` |
 | `services/llm_edit_agent.py` | Rewritten system prompt: sincere interviewer persona, why-ladder, push-back protocol, anecdote extraction, motivation inference, mental models (First Principles, Second Order Thinking, Inversion, Occam's Razor, 5W+H), graph impact banner instructions |
-| `services/graph_edit_service.py` | Added `_add_node()` handlers for: `Anecdote`, `Motivation`, `Value`, `Goal`, `CultureIdentity`, `BehavioralInsight` — each auto-links to `User` node |
-| `database/neo4j_client.py` | Added uniqueness constraints for all 6 new node types |
+| `services/graph_edit_service.py` | Added `_add_node()` handlers for candidate nodes: `Anecdote`, `Motivation`, `Value`, `Goal`, `CultureIdentity`, `BehavioralInsight`; and job nodes: `JobSkillRequirement`, `JobDomainRequirement`, `WorkStyle`, `TeamComposition`, `RoleContext`, `HiringGoal`, `SoftSkillRequirement`, `TeamCultureIdentity`, `SuccessMetric`, `InterviewSignal`, `BehavioralInsight` (job) |
+| `database/neo4j_client.py` | Added uniqueness constraints for all 6 candidate node types and 7 job node types |
+| `services/llm_edit_agent.py` | Split `_build_system_prompt()` into `_build_user_system_prompt()` and `_build_job_system_prompt()` — separate interview personas; enriched `_get_graph_summary()` for jobs to pull all deep profile nodes; split opening message by entity type |

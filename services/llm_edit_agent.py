@@ -46,11 +46,18 @@ class LLMEditAgent:
         """
         graph_summary = await self._get_graph_summary(entity_type, entity_id)
         system_msg = self._build_system_prompt(graph_summary)
-        opening_user_msg = (
-            "I'm ready. I want this profile to be a true reflection of who I am — "
-            "not just a list of technologies, but the real picture of how I work, what drives me, "
-            "and where I'm headed. Ask me what you need to know."
-        )
+        if entity_type == "job":
+            opening_user_msg = (
+                "I want this job posting to actually reflect what we're looking for — "
+                "not just a list of skills, but the real picture of the role, the team, "
+                "and the kind of person who will thrive here. Ask me what you need to know."
+            )
+        else:
+            opening_user_msg = (
+                "I'm ready. I want this profile to be a true reflection of who I am — "
+                "not just a list of technologies, but the real picture of how I work, what drives me, "
+                "and where I'm headed. Ask me what you need to know."
+            )
 
         raw_json = await self._call_with_retry(
             messages=[
@@ -175,23 +182,114 @@ class LLMEditAgent:
                 "assessment": assessment[0] if assessment else None,
             }
         else:
-            requirements = await self.neo4j.run_query(
+            job_meta = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id}) RETURN j.title AS title, j.company AS company, "
+                "j.remote_policy AS remote_policy, j.company_size AS company_size, "
+                "j.experience_years_min AS experience_years_min",
+                {"id": entity_id},
+            )
+            skill_reqs = await self.neo4j.run_query(
                 """
                 MATCH (j:Job {id: $id})-[:HAS_SKILL_REQUIREMENTS]->(:JobSkillRequirements)
                       -[:HAS_SKILL_FAMILY_REQ]->(:JobSkillFamily)
                       -[:REQUIRES_SKILL]->(r:JobSkillRequirement)
-                RETURN r.name AS name, r.importance AS importance, r.min_years AS min_years
+                RETURN r.name AS name, r.importance AS importance,
+                       coalesce(r.min_years, 0) AS min_years
+                ORDER BY r.importance DESC
                 """,
+                {"id": entity_id},
+            )
+            domain_reqs = await self.neo4j.run_query(
+                """
+                MATCH (j:Job {id: $id})-[:HAS_DOMAIN_REQUIREMENTS]->(:JobDomainRequirements)
+                      -[:HAS_DOMAIN_FAMILY_REQ]->(:JobDomainFamily)
+                      -[:REQUIRES_DOMAIN]->(d:JobDomainRequirement)
+                RETURN d.name AS name, coalesce(d.min_years, 0) AS min_years
+                """,
+                {"id": entity_id},
+            )
+            work_styles = await self.neo4j.run_query(
+                """
+                MATCH (j:Job {id: $id})-[:HAS_CULTURE_REQUIREMENTS]->(:JobCultureRequirements)
+                      -[:HAS_WORK_STYLE]->(w:WorkStyle)
+                RETURN w.style AS style
+                """,
+                {"id": entity_id},
+            )
+            # Deep job profile nodes (populated via recruiter interview)
+            team_composition = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:HAS_TEAM_COMPOSITION]->(t:TeamComposition) "
+                "RETURN t.team_size AS team_size, t.team_makeup AS team_makeup, "
+                "t.reporting_to AS reporting_to, t.hiring_for_gap AS hiring_for_gap, "
+                "t.existing_strengths AS existing_strengths",
+                {"id": entity_id},
+            )
+            role_context = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:HAS_ROLE_CONTEXT]->(r:RoleContext) "
+                "RETURN r.first_30_days AS first_30_days, r.first_90_days AS first_90_days, "
+                "r.owns_what AS owns_what, r.reports_to AS reports_to, "
+                "r.growth_trajectory AS growth_trajectory, r.why_role_open AS why_role_open",
+                {"id": entity_id},
+            )
+            hiring_goals = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:DRIVEN_BY]->(h:HiringGoal) "
+                "RETURN h.urgency AS urgency, h.timeline AS timeline, "
+                "h.gap_being_filled AS gap_being_filled, h.ideal_background AS ideal_background, "
+                "h.dealbreaker_absence AS dealbreaker_absence",
+                {"id": entity_id},
+            )
+            soft_skills = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:REQUIRES_QUALITY]->(s:SoftSkillRequirement) "
+                "RETURN s.name AS name, s.quality AS quality, s.expectation AS expectation, "
+                "s.evidence_indicator AS evidence_indicator, s.dealbreaker AS dealbreaker",
+                {"id": entity_id},
+            )
+            team_culture = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:HAS_TEAM_CULTURE]->(c:TeamCultureIdentity) "
+                "RETURN c.decision_making AS decision_making, "
+                "c.communication_style AS communication_style, "
+                "c.feedback_culture AS feedback_culture, c.pace AS pace, "
+                "c.work_life AS work_life, c.management_style AS management_style, "
+                "c.team_values AS team_values, c.anti_patterns AS anti_patterns",
+                {"id": entity_id},
+            )
+            success_metrics = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:DEFINES_SUCCESS_BY]->(m:SuccessMetric) "
+                "RETURN m.at_30_days AS at_30_days, m.at_90_days AS at_90_days, "
+                "m.at_1_year AS at_1_year, m.key_deliverables AS key_deliverables, "
+                "m.how_measured AS how_measured",
+                {"id": entity_id},
+            )
+            interview_signals = await self.neo4j.run_query(
+                "MATCH (j:Job {id: $id})-[:SCREENS_FOR]->(s:InterviewSignal) "
+                "RETURN s.name AS name, s.signal_type AS signal_type, "
+                "s.what_to_watch_for AS what_to_watch_for, s.why_it_matters AS why_it_matters",
                 {"id": entity_id},
             )
             return {
                 "entity_type": "job",
                 "entity_id": entity_id,
-                "requirements": requirements,
+                "meta": job_meta[0] if job_meta else {},
+                "skill_requirements": skill_reqs,
+                "domain_requirements": domain_reqs,
+                "work_styles": [w["style"] for w in work_styles],
+                "team_composition": team_composition[0] if team_composition else None,
+                "role_context": role_context[0] if role_context else None,
+                "hiring_goals": hiring_goals[0] if hiring_goals else None,
+                "soft_skills": soft_skills,
+                "team_culture": team_culture[0] if team_culture else None,
+                "success_metrics": success_metrics[0] if success_metrics else None,
+                "interview_signals": interview_signals,
             }
 
     def _build_system_prompt(self, graph_summary: dict) -> str:
-        """Build the digital twin interview system prompt."""
+        """Dispatch to the correct system prompt based on entity type."""
+        if graph_summary.get("entity_type") == "job":
+            return self._build_job_system_prompt(graph_summary)
+        return self._build_user_system_prompt(graph_summary)
+
+    def _build_user_system_prompt(self, graph_summary: dict) -> str:
+        """Build the digital twin interview system prompt for candidate profiling."""
         assessment = graph_summary.get("assessment") or {}
         candidate_identity = assessment.get("candidate_identity", "")
         honest_summary = assessment.get("honest_summary", "")
@@ -396,6 +494,212 @@ class LLMEditAgent:
             "  digital_twin_progress: optional, e.g. 'Technical depth: 72% | Human depth: 31%'\n"
             "  Estimate human depth based on: anecdotes (30%), motivations/values (25%), "
             "goals (20%), culture identity (15%), behavioral insights (10%)"
+        )
+
+    def _build_job_system_prompt(self, graph_summary: dict) -> str:
+        """Build the deep recruiter interview system prompt for job profile building."""
+        meta = graph_summary.get("meta") or {}
+        skill_reqs = graph_summary.get("skill_requirements", [])
+        domain_reqs = graph_summary.get("domain_requirements", [])
+        work_styles = graph_summary.get("work_styles", [])
+        team_composition = graph_summary.get("team_composition")
+        role_context = graph_summary.get("role_context")
+        hiring_goals = graph_summary.get("hiring_goals")
+        soft_skills = graph_summary.get("soft_skills", [])
+        team_culture = graph_summary.get("team_culture")
+        success_metrics = graph_summary.get("success_metrics")
+        interview_signals = graph_summary.get("interview_signals", [])
+
+        missing = []
+        if not team_composition:
+            missing.append("team composition (who is already on the team, what gap exists)")
+        if not role_context:
+            missing.append("role context (what this person will own, first 30/90 days)")
+        if not hiring_goals:
+            missing.append("hiring goal (why this role is open, urgency, dealbreakers)")
+        if not soft_skills:
+            missing.append("soft skill requirements (ownership, accountability, communication)")
+        if not team_culture:
+            missing.append("team culture (how the team actually works, management style)")
+        if not success_metrics:
+            missing.append("success definition (what does good look like at 30/90/180 days)")
+
+        missing_note = (
+            "\nPROFILE GAPS — these are critical missing sections to surface first:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+            if missing else ""
+        )
+
+        return (
+            "You are building a complete job profile — a digital twin of what this role actually is, "
+            "not just a list of skill requirements.\n\n"
+            "You are interviewing the RECRUITER, not the candidate. Your job is to understand:\n"
+            "  1. WHY this role exists and what problem it solves for the team\n"
+            "  2. WHO is already on the team and what gap this person fills\n"
+            "  3. WHAT this person will truly own — not the job description, but the real expectations\n"
+            "  4. HOW the team works — culture, decision-making, pace, management style\n"
+            "  5. WHAT GOOD LOOKS LIKE — how success is measured at 30, 90, and 365 days\n"
+            "  6. WHAT QUALITIES are actually non-negotiable (ownership, accountability, communication)\n\n"
+            "Most job postings are vague checklists. This interview makes them honest.\n"
+            "The candidate who reads this profile will know exactly what they are walking into.\n\n"
+            "CURRENT JOB PROFILE:\n"
+            f"Title: {meta.get('title', '(unknown)')}\n"
+            f"Company: {meta.get('company', '(unknown)')}\n"
+            f"Remote Policy: {meta.get('remote_policy', '(unknown)')}\n"
+            f"Company Size: {meta.get('company_size', '(unknown)')}\n"
+            f"Experience Min: {meta.get('experience_years_min', '(unknown)')} years\n"
+            f"Skill Requirements ({len(skill_reqs)}): "
+            f"{[s['name'] for s in skill_reqs[:8]]}\n"
+            f"Domain Requirements: {[d['name'] for d in domain_reqs]}\n"
+            f"Work Styles: {work_styles}\n"
+            f"Soft Skills Captured: {[s['name'] for s in soft_skills]}\n"
+            f"Team Composition: {team_composition or '(not yet captured)'}\n"
+            f"Role Context: {role_context or '(not yet captured)'}\n"
+            f"Hiring Goal: {hiring_goals or '(not yet captured)'}\n"
+            f"Team Culture: {team_culture or '(not yet captured)'}\n"
+            f"Success Metrics: {success_metrics or '(not yet captured)'}\n"
+            f"Interview Signals: {interview_signals}\n"
+            f"{missing_note}\n\n"
+            "═══════════════════════════════════════════════════════\n"
+            "INTERVIEW RULES FOR JOB PROFILING\n"
+            "═══════════════════════════════════════════════════════\n\n"
+            "RULE 1 — WHY-LADDER: Every requirement has a reason. Find it.\n"
+            "  'We need Kubernetes experience' → 'Is someone building K8s or operating an existing setup?'\n"
+            "  → 'What is running right now, and what breaks without this person?'\n"
+            "  → 'Would you trade deep K8s knowledge for strong distributed systems instincts?'\n"
+            "  Strip checkbox requirements down to actual problems the team needs solved.\n\n"
+            "RULE 2 — THE TEAM FIRST: Before asking about skills, understand the team.\n"
+            "  'Who will this person work with every day?'\n"
+            "  'What does the team look like right now — seniority mix, strengths, gaps?'\n"
+            "  'What does the person sitting next to this hire actually do?'\n"
+            "  Capture this as a TeamComposition node.\n\n"
+            "RULE 3 — OWNERSHIP CLARITY: Do not accept vague responsibility descriptions.\n"
+            "  'Owns the backend' → 'What does own mean concretely — who reviews their PRs?'\n"
+            "  → 'When something breaks at 2am, is it their pager?'\n"
+            "  → 'Do they have authority to make architectural decisions without approval?'\n"
+            "  The difference between 'owns' and 'contributes to' changes the entire hire.\n\n"
+            "RULE 4 — SOFT SKILLS ARE BEHAVIORS: Do not accept abstract quality labels.\n"
+            "  'Strong ownership' → 'Describe the last person on your team who had this.'\n"
+            "  → 'What did they do that told you they had ownership?'\n"
+            "  → 'What happened when someone DIDN'T have this quality?'\n"
+            "  Capture each as a SoftSkillRequirement with evidence_indicator — not just a label.\n\n"
+            "RULE 5 — WHAT GOOD LOOKS LIKE: Every role needs a definition of success.\n"
+            "  'What does this person accomplish in their first 30 days?'\n"
+            "  'What would you see at 90 days that tells you this was the right hire?'\n"
+            "  'What would make you regret this hire 6 months from now?'\n"
+            "  Capture this as a SuccessMetric node.\n\n"
+            "RULE 6 — TEAM CULTURE (not company values): Dig into how the team actually works.\n"
+            "  'How are technical decisions made on your team?'\n"
+            "  'How often does your team meet, and for what?'\n"
+            "  'How does your manager give feedback — and how often?'\n"
+            "  'What kind of person has left your team, and why?'\n"
+            "  Capture this as a TeamCultureIdentity node.\n\n"
+            "RULE 7 — WHY IS THIS ROLE OPEN: Always establish this early.\n"
+            "  Scaling? Replacement? New capability? Backfill?\n"
+            "  'Is this a new role or did someone leave it?'\n"
+            "  If replacement: 'What did the previous person struggle with?'\n"
+            "  Capture this in HiringGoal.why_role_open.\n\n"
+            "RULE 8 — INTERVIEW SIGNALS: Ask what the recruiter is watching for.\n"
+            "  'What would make you reject someone who looks good on paper?'\n"
+            "  'What green flags do you look for in the interview?'\n"
+            "  Capture these as InterviewSignal nodes.\n\n"
+            "RULE 9 — ONE QUESTION PER TURN. Let the answer lead you.\n\n"
+            "RULE 10 — PUSH-BACK PROTOCOL: Same as candidate interviews.\n"
+            "  If recruiter says 'just add communication skills' without context:\n"
+            "  Add it, then redirect: 'Added. What does poor communication look like "
+            "on your team — what actually goes wrong?'\n"
+            "  Record a BehavioralInsight about the recruiter too.\n\n"
+            "RULE 11 — NEVER HALLUCINATE: If you are not sure about team size, timeline, "
+            "or any property — ask. Do not fill in a null with an assumption.\n\n"
+            "═══════════════════════════════════════════════════════\n"
+            "MENTAL MODELS FOR JOB PROBING\n"
+            "═══════════════════════════════════════════════════════\n\n"
+            "FIRST PRINCIPLES — Strip away the job description. What is the actual problem?\n"
+            "  'If you couldn't hire anyone, what would break on your team in 3 months?'\n"
+            "  That is the real requirement.\n\n"
+            "SECOND ORDER THINKING — What will this hire cause downstream?\n"
+            "  'How will the rest of the team change once this person joins?'\n"
+            "  'Does hiring a senior here create a bottleneck for the juniors?'\n\n"
+            "INVERSION — Ask what failure looks like.\n"
+            "  'What made your last bad hire a bad hire?'\n"
+            "  'What would make you fire this person in 6 months?'\n"
+            "  'What would make them quit in 6 months?'\n"
+            "  These questions surface the real culture and expectations better than any positive question.\n\n"
+            "OCCAM'S RAZOR — Long requirement lists hide the real non-negotiables.\n"
+            "  'You listed 12 requirements. If you could only keep 3, which ones?'\n"
+            "  The answer tells you the actual job.\n\n"
+            "5W+H — Apply this to every skill requirement:\n"
+            "  WHO uses this skill — the hire or the whole team?\n"
+            "  WHAT is it used for — building, maintaining, or designing?\n"
+            "  WHEN — daily, occasionally, or just at the start?\n"
+            "  WHERE — in which part of the stack/product?\n"
+            "  WHY — what breaks if they don't have it?\n"
+            "  HOW deeply — deep expert or practical working knowledge?\n\n"
+            "═══════════════════════════════════════════════════════\n"
+            "CURRENT FULL PROFILE STATE:\n"
+            "═══════════════════════════════════════════════════════\n"
+            f"{json.dumps(graph_summary, indent=2)}\n\n"
+            "RESPONSE SCHEMA — return ONLY valid JSON:\n"
+            f"{_PROPOSAL_SCHEMA}\n\n"
+            "JOB NODE FORMATS FOR add_nodes:\n"
+            "  JobSkillRequirement: {\"label\": \"JobSkillRequirement\", \"name\": \"...\",\n"
+            "                        \"importance\": \"must_have|nice_to_have\",\n"
+            "                        \"min_years\": 3, \"required\": true,\n"
+            "                        \"family\": \"Cloud & DevOps\"}\n"
+            "  JobDomainRequirement: {\"label\": \"JobDomainRequirement\", \"name\": \"...\",\n"
+            "                         \"min_years\": 2, \"family\": \"FinTech\"}\n"
+            "  WorkStyle:  {\"label\": \"WorkStyle\", \"name\": \"async-first\"}\n"
+            "  TeamComposition: {\"label\": \"TeamComposition\", \"name\": \"current_team\",\n"
+            "                    \"team_size\": 6,\n"
+            "                    \"team_makeup\": \"2 senior backend, 1 EM, 1 data eng, 2 frontend\",\n"
+            "                    \"reporting_to\": \"VP Engineering\",\n"
+            "                    \"hiring_for_gap\": \"no one owns observability and infra\",\n"
+            "                    \"existing_strengths\": \"strong on distributed systems\"}\n"
+            "  RoleContext: {\"label\": \"RoleContext\", \"name\": \"role_context\",\n"
+            "                \"first_30_days\": \"...\", \"first_90_days\": \"...\",\n"
+            "                \"owns_what\": \"owns the entire payments service end-to-end\",\n"
+            "                \"reports_to\": \"Engineering Manager\",\n"
+            "                \"growth_trajectory\": \"IC path or management in 18 months\",\n"
+            "                \"why_role_open\": \"scaling|replacement|new_capability|backfill\"}\n"
+            "  HiringGoal: {\"label\": \"HiringGoal\", \"name\": \"primary_hiring_goal\",\n"
+            "               \"urgency\": \"critical|growing|strategic\",\n"
+            "               \"timeline\": \"need someone in 30 days\",\n"
+            "               \"gap_being_filled\": \"we have no one who owns infra\",\n"
+            "               \"ideal_background\": \"...\",\n"
+            "               \"dealbreaker_absence\": \"must have production K8s experience\"}\n"
+            "  SoftSkillRequirement: {\"label\": \"SoftSkillRequirement\",\n"
+            "                         \"name\": \"ownership\",\n"
+            "                         \"quality\": \"ownership|accountability|initiative|communication|"
+            "mentorship|conflict_resolution|cross_functional|documentation|estimation\",\n"
+            "                         \"expectation\": \"operates without hand-holding\",\n"
+            "                         \"evidence_indicator\": \"proactively flags risks before asked\",\n"
+            "                         \"dealbreaker\": true}\n"
+            "  TeamCultureIdentity: {\"label\": \"TeamCultureIdentity\", \"name\": \"team_culture\",\n"
+            "                        \"decision_making\": \"consensus|top_down|distributed|data_driven\",\n"
+            "                        \"communication_style\": \"async_first|high_meeting|"
+            "documentation_heavy|verbal\",\n"
+            "                        \"feedback_culture\": \"blunt|diplomatic|frequent|sparse\",\n"
+            "                        \"pace\": \"sprint|steady|deliberate\",\n"
+            "                        \"work_life\": \"startup_hours|sustainable|flexible\",\n"
+            "                        \"management_style\": \"hands_on|hands_off|coaching\",\n"
+            "                        \"team_values\": [\"shipping fast\", \"code quality\"],\n"
+            "                        \"anti_patterns\": [\"needs constant direction\", \"can't handle ambiguity\"]}\n"
+            "  SuccessMetric: {\"label\": \"SuccessMetric\", \"name\": \"success_definition\",\n"
+            "                  \"at_30_days\": \"...\", \"at_90_days\": \"...\", \"at_1_year\": \"...\",\n"
+            "                  \"key_deliverables\": [\"...\"],\n"
+            "                  \"how_measured\": \"...\"}\n"
+            "  InterviewSignal: {\"label\": \"InterviewSignal\",\n"
+            "                    \"name\": \"[short id e.g. green_flag_ownership]\",\n"
+            "                    \"signal_type\": \"green_flag|red_flag\",\n"
+            "                    \"what_to_watch_for\": \"...\",\n"
+            "                    \"why_it_matters\": \"...\"}\n"
+            "  BehavioralInsight: same format as user interview — record recruiter behavior too\n\n"
+            "EDGE FORMAT: same as user interview for any cross-links\n\n"
+            "GRAPH IMPACT BANNER FORMAT:\n"
+            "  headline: '1-sentence summary of what this answer captured about the role'\n"
+            "  items: icon (use 'skill' for skills, 'culture' for team culture, "
+            "'behavior' for soft skills, 'goal' for role context/hiring goals)\n"
+            "  digital_twin_progress: e.g. 'Role profile: 45% complete | Missing: team culture, success definition'"
         )
 
     async def _persist_message(

@@ -105,6 +105,35 @@ class Neo4jClient:
                 "CREATE CONSTRAINT IF NOT EXISTS FOR (b:BehavioralInsight) "
                 "REQUIRE (b.name, b.user_id) IS UNIQUE"
             ),
+            # Job-side deep profile nodes — scoped per job
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (t:TeamComposition) "
+                "REQUIRE (t.name, t.job_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (r:RoleContext) "
+                "REQUIRE (r.name, r.job_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (h:HiringGoal) "
+                "REQUIRE (h.name, h.job_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (s:SoftSkillRequirement) "
+                "REQUIRE (s.name, s.job_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (tc:TeamCultureIdentity) "
+                "REQUIRE (tc.name, tc.job_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (sm:SuccessMetric) "
+                "REQUIRE (sm.name, sm.job_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (is:InterviewSignal) "
+                "REQUIRE (is.name, is.job_id) IS UNIQUE"
+            ),
         ]
         for constraint in constraints:
             try:

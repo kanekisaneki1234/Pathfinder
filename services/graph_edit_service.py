@@ -416,6 +416,250 @@ class GraphEditService:
                     "implication": spec.get("implication"),
                 },
             )
+        # ── Job-specific deep profile nodes ───────────────────────────────────
+
+        elif label == "JobSkillRequirement" and entity_type == "job":
+            family = spec.get("family", "Other")
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (req_cat:JobSkillRequirements {job_id: $entity_id})
+                MERGE (j)-[:HAS_SKILL_REQUIREMENTS]->(req_cat)
+                MERGE (fam:JobSkillFamily {name: $family, job_id: $entity_id})
+                MERGE (req_cat)-[:HAS_SKILL_FAMILY_REQ]->(fam)
+                MERGE (r:JobSkillRequirement {name: $name, job_id: $entity_id})
+                SET r.importance = $importance,
+                    r.min_years  = $min_years,
+                    r.required   = $required,
+                    r.source     = 'recruiter_edit'
+                MERGE (fam)-[:REQUIRES_SKILL]->(r)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "family": family,
+                    "name": name,
+                    "importance": spec.get("importance", "must_have"),
+                    "min_years": spec.get("min_years"),
+                    "required": spec.get("required", True),
+                },
+            )
+        elif label == "JobDomainRequirement" and entity_type == "job":
+            family = spec.get("family", "Other")
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (req_cat:JobDomainRequirements {job_id: $entity_id})
+                MERGE (j)-[:HAS_DOMAIN_REQUIREMENTS]->(req_cat)
+                MERGE (fam:JobDomainFamily {name: $family, job_id: $entity_id})
+                MERGE (req_cat)-[:HAS_DOMAIN_FAMILY_REQ]->(fam)
+                MERGE (d:JobDomainRequirement {name: $name, job_id: $entity_id})
+                SET d.min_years = $min_years,
+                    d.source    = 'recruiter_edit'
+                MERGE (fam)-[:REQUIRES_DOMAIN]->(d)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "family": family,
+                    "name": name,
+                    "min_years": spec.get("min_years"),
+                },
+            )
+        elif label == "WorkStyle" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (cc:JobCultureRequirements {job_id: $entity_id})
+                MERGE (j)-[:HAS_CULTURE_REQUIREMENTS]->(cc)
+                MERGE (w:WorkStyle {style: $style, job_id: $entity_id})
+                SET w.source = 'recruiter_edit'
+                MERGE (cc)-[:HAS_WORK_STYLE]->(w)
+                """,
+                {"entity_id": entity_id, "style": name},
+            )
+        elif label == "TeamComposition" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (t:TeamComposition {name: $name, job_id: $entity_id})
+                SET t.team_size         = $team_size,
+                    t.team_makeup       = $team_makeup,
+                    t.reporting_to      = $reporting_to,
+                    t.hiring_for_gap    = $hiring_for_gap,
+                    t.existing_strengths = $existing_strengths,
+                    t.source            = 'conversation'
+                MERGE (j)-[:HAS_TEAM_COMPOSITION]->(t)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "team_size": spec.get("team_size"),
+                    "team_makeup": spec.get("team_makeup"),
+                    "reporting_to": spec.get("reporting_to"),
+                    "hiring_for_gap": spec.get("hiring_for_gap"),
+                    "existing_strengths": spec.get("existing_strengths"),
+                },
+            )
+        elif label == "RoleContext" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (r:RoleContext {name: $name, job_id: $entity_id})
+                SET r.first_30_days      = $first_30_days,
+                    r.first_90_days      = $first_90_days,
+                    r.owns_what          = $owns_what,
+                    r.reports_to         = $reports_to,
+                    r.growth_trajectory  = $growth_trajectory,
+                    r.why_role_open      = $why_role_open,
+                    r.source             = 'conversation'
+                MERGE (j)-[:HAS_ROLE_CONTEXT]->(r)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "first_30_days": spec.get("first_30_days"),
+                    "first_90_days": spec.get("first_90_days"),
+                    "owns_what": spec.get("owns_what"),
+                    "reports_to": spec.get("reports_to"),
+                    "growth_trajectory": spec.get("growth_trajectory"),
+                    "why_role_open": spec.get("why_role_open"),
+                },
+            )
+        elif label == "HiringGoal" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (h:HiringGoal {name: $name, job_id: $entity_id})
+                SET h.urgency             = $urgency,
+                    h.timeline            = $timeline,
+                    h.gap_being_filled    = $gap_being_filled,
+                    h.ideal_background    = $ideal_background,
+                    h.dealbreaker_absence = $dealbreaker_absence,
+                    h.source              = 'conversation'
+                MERGE (j)-[:DRIVEN_BY]->(h)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "urgency": spec.get("urgency"),
+                    "timeline": spec.get("timeline"),
+                    "gap_being_filled": spec.get("gap_being_filled"),
+                    "ideal_background": spec.get("ideal_background"),
+                    "dealbreaker_absence": spec.get("dealbreaker_absence"),
+                },
+            )
+        elif label == "SoftSkillRequirement" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (s:SoftSkillRequirement {name: $name, job_id: $entity_id})
+                SET s.quality            = $quality,
+                    s.expectation        = $expectation,
+                    s.evidence_indicator = $evidence_indicator,
+                    s.dealbreaker        = $dealbreaker,
+                    s.source             = 'conversation'
+                MERGE (j)-[:REQUIRES_QUALITY]->(s)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "quality": spec.get("quality"),
+                    "expectation": spec.get("expectation"),
+                    "evidence_indicator": spec.get("evidence_indicator"),
+                    "dealbreaker": spec.get("dealbreaker", False),
+                },
+            )
+        elif label == "TeamCultureIdentity" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (c:TeamCultureIdentity {name: $name, job_id: $entity_id})
+                SET c.decision_making      = $decision_making,
+                    c.communication_style  = $communication_style,
+                    c.feedback_culture     = $feedback_culture,
+                    c.pace                 = $pace,
+                    c.work_life            = $work_life,
+                    c.management_style     = $management_style,
+                    c.team_values          = $team_values,
+                    c.anti_patterns        = $anti_patterns,
+                    c.source               = 'conversation'
+                MERGE (j)-[:HAS_TEAM_CULTURE]->(c)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "decision_making": spec.get("decision_making"),
+                    "communication_style": spec.get("communication_style"),
+                    "feedback_culture": spec.get("feedback_culture"),
+                    "pace": spec.get("pace"),
+                    "work_life": spec.get("work_life"),
+                    "management_style": spec.get("management_style"),
+                    "team_values": json.dumps(spec.get("team_values", [])),
+                    "anti_patterns": json.dumps(spec.get("anti_patterns", [])),
+                },
+            )
+        elif label == "SuccessMetric" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (m:SuccessMetric {name: $name, job_id: $entity_id})
+                SET m.at_30_days       = $at_30_days,
+                    m.at_90_days       = $at_90_days,
+                    m.at_1_year        = $at_1_year,
+                    m.key_deliverables = $key_deliverables,
+                    m.how_measured     = $how_measured,
+                    m.source           = 'conversation'
+                MERGE (j)-[:DEFINES_SUCCESS_BY]->(m)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "at_30_days": spec.get("at_30_days"),
+                    "at_90_days": spec.get("at_90_days"),
+                    "at_1_year": spec.get("at_1_year"),
+                    "key_deliverables": json.dumps(spec.get("key_deliverables", [])),
+                    "how_measured": spec.get("how_measured"),
+                },
+            )
+        elif label == "InterviewSignal" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (s:InterviewSignal {name: $name, job_id: $entity_id})
+                SET s.signal_type        = $signal_type,
+                    s.what_to_watch_for  = $what_to_watch_for,
+                    s.why_it_matters     = $why_it_matters,
+                    s.source             = 'conversation'
+                MERGE (j)-[:SCREENS_FOR]->(s)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "signal_type": spec.get("signal_type"),
+                    "what_to_watch_for": spec.get("what_to_watch_for"),
+                    "why_it_matters": spec.get("why_it_matters"),
+                },
+            )
+        elif label == "BehavioralInsight" and entity_type == "job":
+            await self.neo4j.run_write(
+                """
+                MATCH (j:Job {id: $entity_id})
+                MERGE (b:BehavioralInsight {name: $name, job_id: $entity_id})
+                SET b.insight_type     = $insight_type,
+                    b.trigger          = $trigger,
+                    b.response_pattern = $response_pattern,
+                    b.implication      = $implication,
+                    b.source           = 'conversation'
+                MERGE (j)-[:HAS_BEHAVIORAL_INSIGHT]->(b)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "insight_type": spec.get("insight_type"),
+                    "trigger": spec.get("trigger"),
+                    "response_pattern": spec.get("response_pattern"),
+                    "implication": spec.get("implication"),
+                },
+            )
         else:
             # Generic node: MERGE by name + entity_id, set all provided props
             props = {k: v for k, v in spec.items() if k not in ("label",) and v is not None}
