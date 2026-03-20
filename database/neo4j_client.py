@@ -80,6 +80,31 @@ class Neo4jClient:
                 "CREATE CONSTRAINT IF NOT EXISTS FOR (dr:JobDomainRequirement) "
                 "REQUIRE (dr.name, dr.job_id) IS UNIQUE"
             ),
+            # Digital twin identity nodes — all scoped per user
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (a:Anecdote) "
+                "REQUIRE (a.name, a.user_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Motivation) "
+                "REQUIRE (m.name, m.user_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (v:Value) "
+                "REQUIRE (v.name, v.user_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (g:Goal) "
+                "REQUIRE (g.name, g.user_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (c:CultureIdentity) "
+                "REQUIRE (c.name, c.user_id) IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (b:BehavioralInsight) "
+                "REQUIRE (b.name, b.user_id) IS UNIQUE"
+            ),
         ]
         for constraint in constraints:
             try:

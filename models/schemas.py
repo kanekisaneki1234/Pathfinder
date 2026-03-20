@@ -512,11 +512,39 @@ class GraphMutation(BaseModel):
     )
 
 
+class GraphImpactItem(BaseModel):
+    """A single node/edge change surfaced in the scrutability banner."""
+    icon: Literal[
+        "skill", "anecdote", "motivation", "value", "goal",
+        "culture", "behavior", "domain", "project", "experience"
+    ]
+    label: str = Field(description="Human-readable name of the thing being changed, e.g. 'Kubernetes'")
+    change_type: Literal["add", "update", "infer", "flag"]
+    detail: str = Field(description="One-sentence explanation of what changed and why it matters to the profile")
+
+
+class GraphImpactBanner(BaseModel):
+    """
+    Scrutability banner shown to the user after each conversation turn.
+    Tells them exactly how their answer is shaping their digital twin in the graph.
+    """
+    headline: str = Field(description="1-sentence summary, e.g. 'Your answer updated 3 nodes in your digital twin'")
+    items: List[GraphImpactItem] = Field(default_factory=list)
+    digital_twin_progress: Optional[str] = Field(
+        default=None,
+        description="Optional progress hint, e.g. 'Technical depth: 72% | Human depth: 31%'"
+    )
+
+
 class GraphMutationProposal(BaseModel):
-    """LLM response: reasoning, proposed mutations, and next First Principles question."""
+    """LLM response: reasoning, proposed mutations, next interview question, and scrutability banner."""
     reasoning: str = Field(description="LLM's reasoning visible to the user")
     mutations: GraphMutation
-    follow_up_question: str = Field(description="Next First Principles question to ask")
+    follow_up_question: str = Field(description="Next interview question to ask")
+    graph_impact_banner: Optional[GraphImpactBanner] = Field(
+        default=None,
+        description="Scrutability banner showing what this conversation turn updates in the graph"
+    )
 
 
 class EditSessionMessage(BaseModel):
@@ -529,6 +557,15 @@ class EditSessionResponse(BaseModel):
     session_id: str
     opening_question: str
     graph_summary: dict
+    interview_banner: str = Field(
+        default=(
+            "Everything you share in this conversation shapes your digital twin. "
+            "Recruiters won't just see your skills — they'll see your stories, your motivations, "
+            "and how you think. The more genuine your answers, the more accurately this profile "
+            "will represent who you truly are. Every answer you give can update your graph in real time."
+        ),
+        description="Scrutability notice shown prominently when the session starts"
+    )
 
 
 class StartEditRequest(BaseModel):

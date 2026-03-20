@@ -282,6 +282,140 @@ class GraphEditService:
                     "has_measurable_impact": spec.get("has_measurable_impact", False),
                 },
             )
+        elif label == "Anecdote" and entity_type == "user":
+            await self.neo4j.run_write(
+                """
+                MATCH (u:User {id: $entity_id})
+                MERGE (a:Anecdote {name: $name, user_id: $entity_id})
+                SET a.situation        = $situation,
+                    a.task             = $task,
+                    a.action           = $action,
+                    a.result           = $result,
+                    a.lesson_learned   = $lesson_learned,
+                    a.emotion_valence  = $emotion_valence,
+                    a.confidence_signal = $confidence_signal,
+                    a.spontaneous      = $spontaneous,
+                    a.source           = 'conversation'
+                MERGE (u)-[:HAS_ANECDOTE]->(a)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "situation": spec.get("situation"),
+                    "task": spec.get("task"),
+                    "action": spec.get("action"),
+                    "result": spec.get("result"),
+                    "lesson_learned": spec.get("lesson_learned"),
+                    "emotion_valence": spec.get("emotion_valence"),
+                    "confidence_signal": spec.get("confidence_signal"),
+                    "spontaneous": spec.get("spontaneous", False),
+                },
+            )
+        elif label == "Motivation" and entity_type == "user":
+            await self.neo4j.run_write(
+                """
+                MATCH (u:User {id: $entity_id})
+                MERGE (m:Motivation {name: $name, user_id: $entity_id})
+                SET m.category = $category,
+                    m.strength = $strength,
+                    m.evidence = $evidence,
+                    m.source   = 'conversation'
+                MERGE (u)-[:MOTIVATED_BY]->(m)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "category": spec.get("category"),
+                    "strength": spec.get("strength"),
+                    "evidence": spec.get("evidence"),
+                },
+            )
+        elif label == "Value" and entity_type == "user":
+            await self.neo4j.run_write(
+                """
+                MATCH (u:User {id: $entity_id})
+                MERGE (v:Value {name: $name, user_id: $entity_id})
+                SET v.priority_rank = $priority_rank,
+                    v.evidence      = $evidence,
+                    v.source        = 'conversation'
+                MERGE (u)-[:HOLDS_VALUE]->(v)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "priority_rank": spec.get("priority_rank"),
+                    "evidence": spec.get("evidence"),
+                },
+            )
+        elif label == "Goal" and entity_type == "user":
+            await self.neo4j.run_write(
+                """
+                MATCH (u:User {id: $entity_id})
+                MERGE (g:Goal {name: $name, user_id: $entity_id})
+                SET g.type            = $type,
+                    g.description     = $description,
+                    g.timeframe_years = $timeframe_years,
+                    g.clarity_level   = $clarity_level,
+                    g.source          = 'conversation'
+                MERGE (u)-[:ASPIRES_TO]->(g)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "type": spec.get("type"),
+                    "description": spec.get("description"),
+                    "timeframe_years": spec.get("timeframe_years"),
+                    "clarity_level": spec.get("clarity_level"),
+                },
+            )
+        elif label == "CultureIdentity" and entity_type == "user":
+            await self.neo4j.run_write(
+                """
+                MATCH (u:User {id: $entity_id})
+                MERGE (c:CultureIdentity {name: $name, user_id: $entity_id})
+                SET c.team_size_preference = $team_size_preference,
+                    c.leadership_style     = $leadership_style,
+                    c.conflict_style       = $conflict_style,
+                    c.feedback_preference  = $feedback_preference,
+                    c.energy_sources       = $energy_sources,
+                    c.energy_drains        = $energy_drains,
+                    c.pace_preference      = $pace_preference,
+                    c.source               = 'conversation'
+                MERGE (u)-[:HAS_CULTURE_IDENTITY]->(c)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "team_size_preference": spec.get("team_size_preference"),
+                    "leadership_style": spec.get("leadership_style"),
+                    "conflict_style": spec.get("conflict_style"),
+                    "feedback_preference": spec.get("feedback_preference"),
+                    "energy_sources": json.dumps(spec.get("energy_sources", [])),
+                    "energy_drains": json.dumps(spec.get("energy_drains", [])),
+                    "pace_preference": spec.get("pace_preference"),
+                },
+            )
+        elif label == "BehavioralInsight" and entity_type == "user":
+            await self.neo4j.run_write(
+                """
+                MATCH (u:User {id: $entity_id})
+                MERGE (b:BehavioralInsight {name: $name, user_id: $entity_id})
+                SET b.insight_type      = $insight_type,
+                    b.trigger           = $trigger,
+                    b.response_pattern  = $response_pattern,
+                    b.implication       = $implication,
+                    b.source            = 'conversation'
+                MERGE (u)-[:HAS_BEHAVIORAL_INSIGHT]->(b)
+                """,
+                {
+                    "entity_id": entity_id,
+                    "name": name,
+                    "insight_type": spec.get("insight_type"),
+                    "trigger": spec.get("trigger"),
+                    "response_pattern": spec.get("response_pattern"),
+                    "implication": spec.get("implication"),
+                },
+            )
         else:
             # Generic node: MERGE by name + entity_id, set all provided props
             props = {k: v for k, v in spec.items() if k not in ("label",) and v is not None}
