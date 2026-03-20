@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Node colors by type
 NODE_TYPE_COLORS: dict[str, str] = {
+    # ── User technical nodes ───────────────────────────────────────────────────
     "User": "#E74C3C",
     "SkillCategory": "#2980B9",
     "SkillFamily": "#5DADE2",
@@ -38,6 +39,14 @@ NODE_TYPE_COLORS: dict[str, str] = {
     "Preference": "#76D7C4",
     "PatternCategory": "#7D6608",
     "ProblemSolvingPattern": "#F9E79F",
+    # ── User human-portrait nodes (digital twin) ───────────────────────────────
+    "Anecdote": "#F1948A",          # warm pink — personal story
+    "Motivation": "#F39C12",        # amber — what drives them
+    "Value": "#E8DAEF",             # soft purple — core beliefs
+    "Goal": "#A9DFBF",              # mint — aspirations
+    "CultureIdentity": "#AED6F1",   # sky blue — how they work
+    "BehavioralInsight": "#FAD7A0", # peach — observed patterns
+    # ── Job nodes ─────────────────────────────────────────────────────────────
     "Job": "#C0392B",
     "JobSkillRequirements": "#2471A3",
     "JobSkillFamily": "#7FB3D3",
@@ -47,6 +56,14 @@ NODE_TYPE_COLORS: dict[str, str] = {
     "JobDomainRequirement": "#DDD0EA",
     "JobCultureRequirements": "#148F77",
     "WorkStyle": "#76D7C4",
+    # ── Job deep-profile nodes (recruiter interview) ───────────────────────────
+    "TeamComposition": "#5D6D7E",   # slate — team structure
+    "RoleContext": "#85929E",       # grey-blue — role context
+    "HiringGoal": "#F0B27A",        # orange — hiring intent
+    "SoftSkillRequirement": "#FAD7A0", # peach — soft skill asks
+    "TeamCultureIdentity": "#A9DFBF",  # mint — team culture
+    "SuccessMetric": "#82E0AA",     # green — what success looks like
+    "InterviewSignal": "#F9E79F",   # yellow — signals to watch
 }
 
 NODE_SIZES: dict[str, int] = {
@@ -57,6 +74,13 @@ NODE_SIZES: dict[str, int] = {
     "Skill": 14, "Domain": 14, "Project": 16,
     "Experience": 14, "Preference": 12,
     "ProblemSolvingPattern": 12,
+    # User human-portrait nodes
+    "Anecdote": 16, "Motivation": 16, "Value": 14,
+    "Goal": 16, "CultureIdentity": 18, "BehavioralInsight": 12,
+    # Job deep-profile nodes
+    "TeamComposition": 16, "RoleContext": 14, "HiringGoal": 14,
+    "SoftSkillRequirement": 14, "TeamCultureIdentity": 16,
+    "SuccessMetric": 14, "InterviewSignal": 12,
 }
 
 DEFAULT_NODE_COLOR = "#BDC3C7"
@@ -68,6 +92,8 @@ _USER_LABEL_FILTER = (
     "-Job|-JobSkillRequirements|-JobSkillFamily|-JobSkillRequirement"
     "|-JobDomainRequirements|-JobDomainFamily|-JobDomainRequirement"
     "|-JobCultureRequirements|-WorkStyle"
+    "|-TeamComposition|-RoleContext|-HiringGoal"
+    "|-SoftSkillRequirement|-TeamCultureIdentity|-SuccessMetric|-InterviewSignal"
 )
 _JOB_LABEL_FILTER = (
     "-User|-SkillCategory|-SkillFamily|-Skill"
@@ -76,6 +102,7 @@ _JOB_LABEL_FILTER = (
     "|-ExperienceCategory|-Experience"
     "|-PreferenceCategory|-Preference"
     "|-PatternCategory|-ProblemSolvingPattern"
+    "|-Anecdote|-Motivation|-Value|-Goal|-CultureIdentity|-BehavioralInsight"
 )
 
 # Types that belong exclusively to the user hierarchy
@@ -87,6 +114,9 @@ USER_NODE_TYPES: frozenset[str] = frozenset({
     "ExperienceCategory", "Experience",
     "PreferenceCategory", "Preference",
     "PatternCategory", "ProblemSolvingPattern",
+    # Digital twin — human portrait nodes
+    "Anecdote", "Motivation", "Value", "Goal",
+    "CultureIdentity", "BehavioralInsight",
 })
 
 # Types that belong exclusively to the job hierarchy
@@ -95,6 +125,10 @@ JOB_NODE_TYPES: frozenset[str] = frozenset({
     "JobSkillRequirements", "JobSkillFamily", "JobSkillRequirement",
     "JobDomainRequirements", "JobDomainFamily", "JobDomainRequirement",
     "JobCultureRequirements", "WorkStyle",
+    # Deep job profile nodes (recruiter interview)
+    "TeamComposition", "RoleContext", "HiringGoal",
+    "SoftSkillRequirement", "TeamCultureIdentity",
+    "SuccessMetric", "InterviewSignal",
 })
 
 
