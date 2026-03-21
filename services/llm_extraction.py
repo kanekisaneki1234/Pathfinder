@@ -406,7 +406,7 @@ class LLMExtractionService:
             "Enterprise, Gaming, Education, Other\n"
             "- remote_policy must be one of: 'remote', 'hybrid', 'onsite'\n"
             "- company_size must be one of: 'startup', 'mid-size', 'enterprise'\n"
-            "- importance must be one of: 'must_have', 'nice_to_have'\n"
+            "- importance must be one of: 'must_have' (required/mandatory skills) or 'optional' (nice-to-have/bonus skills)\n"
             "- Return an empty list [] for any section with no data — never omit keys."
         )
 

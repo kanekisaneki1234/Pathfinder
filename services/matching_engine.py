@@ -78,6 +78,7 @@ class MatchingEngine:
                     user_id=user_record["id"],
                     total_score=match.total_score,
                     skill_score=match.skill_score,
+                    optional_skill_score=match.optional_skill_score,
                     domain_score=match.domain_score,
                     soft_skill_score=match.soft_skill_score,
                     culture_fit_score=match.culture_fit_score,
@@ -124,7 +125,8 @@ class MatchingEngine:
         culture_bonus_data = await self._compute_culture_bonus(user_id, job_id)
         pref_data         = await self._compute_preference_bonus(user_id, job_id)
 
-        skill_score       = skill_data.get("score", 0.0) or 0.0
+        mandatory_score   = skill_data.get("mandatory_score", 0.0) or 0.0
+        optional_score    = skill_data.get("optional_score", 0.0) or 0.0
         domain_score      = domain_data.get("score", 0.0) or 0.0
         soft_skill_score  = soft_data.get("score")   # None = no data
         culture_fit_score = culture_fit_data.get("score")  # None = no data
@@ -132,7 +134,7 @@ class MatchingEngine:
         preference_bonus  = pref_data.get("bonus", 0.0) or 0.0
 
         total_score = self._compute_total_score(
-            skill_score, domain_score, soft_skill_score, culture_fit_score
+            mandatory_score, optional_score, domain_score, soft_skill_score, culture_fit_score
         )
 
         return MatchResult(
@@ -140,7 +142,8 @@ class MatchingEngine:
             job_title=job_info[0]["title"] or "Unknown",
             company=job_info[0]["company"],
             total_score=round(total_score, 4),
-            skill_score=round(skill_score, 4),
+            skill_score=round(mandatory_score, 4),
+            optional_skill_score=round(optional_score, 4),
             domain_score=round(domain_score, 4),
             soft_skill_score=round(soft_skill_score, 4) if soft_skill_score is not None else 0.0,
             culture_fit_score=round(culture_fit_score, 4) if culture_fit_score is not None else 0.0,
@@ -152,7 +155,7 @@ class MatchingEngine:
             missing_domains=domain_data.get("missing", []),
             behavioral_risk_flags=soft_data.get("risk_flags", []),
             explanation=self._build_explanation(
-                skill_score, domain_score, soft_skill_score,
+                mandatory_score, domain_score, soft_skill_score,
                 culture_fit_score, culture_bonus, preference_bonus
             ),
         )
@@ -160,12 +163,14 @@ class MatchingEngine:
     def _compute_total_score(
         self,
         skill_score: float,
+        optional_skill_score: float,
         domain_score: float,
         soft_skill_score: float | None,
         culture_fit_score: float | None,
     ) -> float:
         """
         Dynamically weight the score based on which dimensions have data.
+        Skills are split into mandatory (55%) and optional (10%) axes.
         This prevents penalising users who haven't completed the deep interview
         while rewarding those who have by incorporating richer signals.
         """
@@ -174,25 +179,32 @@ class MatchingEngine:
 
         if has_soft and has_culture:
             return (
-                skill_score       * MatchWeight.SKILLS_FULL +
-                domain_score      * MatchWeight.DOMAIN_FULL +
-                soft_skill_score  * MatchWeight.SOFT_SKILLS +
-                culture_fit_score * MatchWeight.CULTURE_FIT
+                skill_score          * MatchWeight.MANDATORY_FULL +
+                optional_skill_score * MatchWeight.OPTIONAL_FULL +
+                domain_score         * MatchWeight.DOMAIN_FULL +
+                soft_skill_score     * MatchWeight.SOFT_SKILLS +
+                culture_fit_score    * MatchWeight.CULTURE_FIT
             )
         elif has_culture:
             return (
-                skill_score       * MatchWeight.SKILLS_CULTURE +
-                domain_score      * MatchWeight.DOMAIN_CULTURE +
-                culture_fit_score * MatchWeight.CULTURE_ONLY
+                skill_score          * MatchWeight.MANDATORY_CULTURE +
+                optional_skill_score * MatchWeight.OPTIONAL_CULTURE +
+                domain_score         * MatchWeight.DOMAIN_CULTURE +
+                culture_fit_score    * MatchWeight.CULTURE_ONLY
             )
         elif has_soft:
             return (
-                skill_score      * MatchWeight.SKILLS_SOFT +
-                domain_score     * MatchWeight.DOMAIN_SOFT +
-                soft_skill_score * MatchWeight.SOFT_ONLY
+                skill_score          * MatchWeight.MANDATORY_SOFT +
+                optional_skill_score * MatchWeight.OPTIONAL_SOFT +
+                domain_score         * MatchWeight.DOMAIN_SOFT +
+                soft_skill_score     * MatchWeight.SOFT_ONLY
             )
         else:
-            return skill_score * MatchWeight.SKILLS + domain_score * MatchWeight.DOMAIN
+            return (
+                skill_score          * MatchWeight.SKILLS_MANDATORY +
+                optional_skill_score * MatchWeight.SKILLS_OPTIONAL +
+                domain_score         * MatchWeight.DOMAIN
+            )
 
     # ──────────────────────────────────────────────────────────────────────────
     # DIMENSION 1: EVIDENCE-WEIGHTED SKILL SCORE
@@ -200,19 +212,28 @@ class MatchingEngine:
 
     async def _compute_skill_score(self, user_id: str, job_id: str) -> dict:
         """
-        Evidence-weighted skill match via MATCHES edges.
+        Evidence-weighted skill match split into mandatory (must_have) and optional axes.
 
         contribution = importance_weight × seniority_factor × evidence_weight
-
         evidence_weight: claimed_only=0.30, mentioned_once=0.50,
                          project_backed=0.80, multiple_productions=1.00
 
-        score = sum(contributions) / sum(all job requirement importance weights)
+        mandatory_score = matched_must_have_weight / total_must_have_weight
+        optional_score  = matched_optional_weight  / total_optional_weight
 
-        This means someone who lists 10 skills they have never used (claimed_only)
-        will score significantly lower than someone with 5 project-backed skills.
+        Backward compat: existing nodes with importance='nice_to_have' fall through
+        to $w_default and are counted in the optional pool.
         """
-        matched_records = await self.client.run_query(
+        evidence_params = {
+            "e_multi":   EvidenceWeight.MULTIPLE_PRODUCTIONS,
+            "e_proj":    EvidenceWeight.PROJECT_BACKED,
+            "e_once":    EvidenceWeight.MENTIONED_ONCE,
+            "e_claim":   EvidenceWeight.CLAIMED_ONLY,
+            "e_unknown": EvidenceWeight.UNKNOWN,
+        }
+
+        # ── Mandatory skills (must_have only) ──────────────────────────────────
+        mandatory_matched = await self.client.run_query(
             """
             MATCH (u:User {id: $user_id})-[:HAS_SKILL_CATEGORY]->(:SkillCategory)
                   -[:HAS_SKILL_FAMILY]->(:SkillFamily)-[:HAS_SKILL]->(s:Skill)
@@ -220,12 +241,8 @@ class MatchingEngine:
                   <-[:REQUIRES_SKILL]-(:JobSkillFamily)
                   <-[:HAS_SKILL_FAMILY_REQ]-(:JobSkillRequirements)
                   <-[:HAS_SKILL_REQUIREMENTS]-(j:Job {id: $job_id})
+            WHERE req.importance = 'must_have'
             WITH req, s,
-                 CASE req.importance
-                   WHEN 'must_have'    THEN $w_must
-                   WHEN 'nice_to_have' THEN $w_nice
-                   ELSE $w_default
-                 END AS imp_weight,
                  CASE
                    WHEN req.min_years IS NULL OR s.years IS NULL THEN 1.0
                    WHEN s.years >= req.min_years               THEN 1.0
@@ -241,56 +258,99 @@ class MatchingEngine:
             RETURN
                 collect(toLower(trim(req.name))) AS matched_names,
                 reduce(acc = 0.0,
-                       x IN collect(imp_weight * seniority_factor * evidence_weight) |
+                       x IN collect($w_must * seniority_factor * evidence_weight) |
                        acc + x) AS matched_weight
             """,
-            {
-                "user_id": user_id,
-                "job_id": job_id,
-                "w_must": SkillImportanceWeight.MUST_HAVE,
-                "w_nice": SkillImportanceWeight.NICE_TO_HAVE,
-                "w_default": SkillImportanceWeight.DEFAULT,
-                "e_multi":   EvidenceWeight.MULTIPLE_PRODUCTIONS,
-                "e_proj":    EvidenceWeight.PROJECT_BACKED,
-                "e_once":    EvidenceWeight.MENTIONED_ONCE,
-                "e_claim":   EvidenceWeight.CLAIMED_ONLY,
-                "e_unknown": EvidenceWeight.UNKNOWN,
-            },
+            {"user_id": user_id, "job_id": job_id,
+             "w_must": SkillImportanceWeight.MUST_HAVE, **evidence_params},
         )
 
-        all_records = await self.client.run_query(
+        mandatory_all = await self.client.run_query(
             """
             OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_SKILL_REQUIREMENTS]->
                   (:JobSkillRequirements)-[:HAS_SKILL_FAMILY_REQ]->
                   (:JobSkillFamily)-[:REQUIRES_SKILL]->(req:JobSkillRequirement)
+            WHERE req.importance = 'must_have'
             RETURN
                 collect(toLower(trim(req.name))) AS all_names,
-                reduce(acc = 0.0, x IN collect(
-                    CASE req.importance
-                      WHEN 'must_have'    THEN $w_must
-                      WHEN 'nice_to_have' THEN $w_nice
-                      ELSE $w_default
-                    END
-                ) | acc + x) AS total_weight
+                reduce(acc = 0.0, x IN collect($w_must) | acc + x) AS total_weight
             """,
-            {
-                "job_id": job_id,
-                "w_must": SkillImportanceWeight.MUST_HAVE,
-                "w_nice": SkillImportanceWeight.NICE_TO_HAVE,
-                "w_default": SkillImportanceWeight.DEFAULT,
-            },
+            {"job_id": job_id, "w_must": SkillImportanceWeight.MUST_HAVE},
         )
 
-        matched_names  = matched_records[0]["matched_names"] if matched_records else []
-        matched_weight = matched_records[0]["matched_weight"] if matched_records else 0.0
-        all_names      = all_records[0]["all_names"] if all_records else []
-        total_weight   = all_records[0]["total_weight"] if all_records else 0.0
+        # ── Optional skills (optional / nice_to_have / unknown importance) ─────
+        optional_matched = await self.client.run_query(
+            """
+            MATCH (u:User {id: $user_id})-[:HAS_SKILL_CATEGORY]->(:SkillCategory)
+                  -[:HAS_SKILL_FAMILY]->(:SkillFamily)-[:HAS_SKILL]->(s:Skill)
+                  -[:MATCHES]->(req:JobSkillRequirement)
+                  <-[:REQUIRES_SKILL]-(:JobSkillFamily)
+                  <-[:HAS_SKILL_FAMILY_REQ]-(:JobSkillRequirements)
+                  <-[:HAS_SKILL_REQUIREMENTS]-(j:Job {id: $job_id})
+            WHERE req.importance <> 'must_have'
+            WITH req, s,
+                 CASE
+                   WHEN req.min_years IS NULL OR s.years IS NULL THEN 1.0
+                   WHEN s.years >= req.min_years               THEN 1.0
+                   ELSE s.years / toFloat(req.min_years)
+                 END AS seniority_factor,
+                 CASE coalesce(s.evidence_strength, 'unknown')
+                   WHEN 'multiple_productions' THEN $e_multi
+                   WHEN 'project_backed'       THEN $e_proj
+                   WHEN 'mentioned_once'       THEN $e_once
+                   WHEN 'claimed_only'         THEN $e_claim
+                   ELSE $e_unknown
+                 END AS evidence_weight
+            RETURN
+                collect(toLower(trim(req.name))) AS matched_names,
+                reduce(acc = 0.0,
+                       x IN collect($w_optional * seniority_factor * evidence_weight) |
+                       acc + x) AS matched_weight
+            """,
+            {"user_id": user_id, "job_id": job_id,
+             "w_optional": SkillImportanceWeight.OPTIONAL, **evidence_params},
+        )
 
-        matched_set = set(matched_names)
-        missing     = [n for n in all_names if n not in matched_set]
-        score       = (matched_weight / total_weight) if total_weight > 0 else 0.0
+        optional_all = await self.client.run_query(
+            """
+            OPTIONAL MATCH (j:Job {id: $job_id})-[:HAS_SKILL_REQUIREMENTS]->
+                  (:JobSkillRequirements)-[:HAS_SKILL_FAMILY_REQ]->
+                  (:JobSkillFamily)-[:REQUIRES_SKILL]->(req:JobSkillRequirement)
+            WHERE req.importance <> 'must_have'
+            RETURN
+                collect(toLower(trim(req.name))) AS all_names,
+                reduce(acc = 0.0, x IN collect($w_optional) | acc + x) AS total_weight
+            """,
+            {"job_id": job_id, "w_optional": SkillImportanceWeight.OPTIONAL},
+        )
 
-        return {"score": score, "matched": matched_names, "missing": missing}
+        # ── Aggregate ──────────────────────────────────────────────────────────
+        m_matched_names  = mandatory_matched[0]["matched_names"] if mandatory_matched else []
+        m_matched_weight = mandatory_matched[0]["matched_weight"] if mandatory_matched else 0.0
+        m_all_names      = mandatory_all[0]["all_names"] if mandatory_all else []
+        m_total_weight   = mandatory_all[0]["total_weight"] if mandatory_all else 0.0
+
+        o_matched_names  = optional_matched[0]["matched_names"] if optional_matched else []
+        o_matched_weight = optional_matched[0]["matched_weight"] if optional_matched else 0.0
+        o_all_names      = optional_all[0]["all_names"] if optional_all else []
+        o_total_weight   = optional_all[0]["total_weight"] if optional_all else 0.0
+
+        mandatory_set     = set(m_matched_names)
+        optional_set      = set(o_matched_names)
+        missing_mandatory = [n for n in m_all_names if n not in mandatory_set]
+        missing_optional  = [n for n in o_all_names if n not in optional_set]
+
+        mandatory_score = (m_matched_weight / m_total_weight) if m_total_weight > 0 else 0.0
+        optional_score  = (o_matched_weight / o_total_weight) if o_total_weight > 0 else 0.0
+
+        return {
+            "mandatory_score":  mandatory_score,
+            "optional_score":   optional_score,
+            "matched":          m_matched_names,
+            "missing":          missing_mandatory,
+            "optional_matched": o_matched_names,
+            "optional_missing": missing_optional,
+        }
 
     # ──────────────────────────────────────────────────────────────────────────
     # DIMENSION 2: DEPTH-WEIGHTED DOMAIN SCORE

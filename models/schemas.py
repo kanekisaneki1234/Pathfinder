@@ -364,9 +364,9 @@ class ExtractedJobSkillRequirement(BaseModel):
         )
     )
     required: bool = Field(default=True, description="True if required, False if nice-to-have")
-    importance: Literal["must_have", "nice_to_have"] = Field(
+    importance: Literal["must_have", "optional"] = Field(
         default="must_have",
-        description="must_have for required skills, nice_to_have for preferred"
+        description="must_have for required/mandatory skills, optional for nice-to-have/bonus skills"
     )
     min_years: Optional[int] = Field(
         default=None, description="Minimum years required, null if not specified"
@@ -448,8 +448,9 @@ class MatchResult(BaseModel):
     # Core score (0-1): dynamically weighted across available dimensions
     total_score: float
     # Individual dimension scores (0-1 each)
-    skill_score: float          # evidence-weighted: claimed_only=0.3x, project_backed=0.8x, multiple_productions=1.0x
-    domain_score: float         # depth-weighted: shallow=0.4x, moderate=0.7x, deep=1.0x
+    skill_score: float              # mandatory (must_have) skills score, evidence-weighted
+    optional_skill_score: float = 0.0  # optional skills score (nice-to-have)
+    domain_score: float             # depth-weighted: shallow=0.4x, moderate=0.7x, deep=1.0x
     soft_skill_score: float = 0.0   # 0 when job has no SoftSkillRequirements or user has no patterns
     culture_fit_score: float = 0.0  # 0 when either side lacks digital twin culture data
     # Legacy bonus signals (kept for backwards compat, not in total_score)
@@ -478,6 +479,7 @@ class CandidateResult(BaseModel):
     user_id: str
     total_score: float
     skill_score: float
+    optional_skill_score: float = 0.0
     domain_score: float
     soft_skill_score: float = 0.0
     culture_fit_score: float = 0.0

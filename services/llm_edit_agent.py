@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 from litellm import acompletion
 
@@ -29,7 +30,7 @@ _PROPOSAL_SCHEMA = json.dumps(GraphMutationProposal.model_json_schema(), indent=
 
 class LLMEditAgent:
     def __init__(self, neo4j: Neo4jClient, sqlite: SQLiteClient):
-        self._model = os.environ.get("LLM_MODEL", "groq/llama-3.3-70b-versatile")
+        self._model = os.environ.get("EDIT_AGENT_MODEL", os.environ.get("LLM_MODEL", "groq/llama-3.3-70b-versatile"))
         self.neo4j = neo4j
         self.sqlite = sqlite
 
@@ -724,8 +725,10 @@ class LLMEditAgent:
         return raw
 
     async def _call_with_retry(self, messages: list) -> str:
-        """Call LLM with exponential backoff (3 attempts)."""
-        for attempt in range(3):
+        """Call LLM with retry logic. Rate limit errors wait the suggested time from
+        the error message + a 2s buffer. Other errors use exponential backoff."""
+        max_attempts = 5
+        for attempt in range(max_attempts):
             try:
                 resp = await acompletion(
                     model=self._model,
@@ -735,8 +738,20 @@ class LLMEditAgent:
                 )
                 return self._unwrap_json(resp.choices[0].message.content)
             except Exception as e:
-                if attempt == 2:
+                if attempt == max_attempts - 1:
                     raise
-                wait = 2 ** attempt
-                logger.warning(f"LLM error (attempt {attempt + 1}/3): {e}. Retrying in {wait}s")
+                error_str = str(e)
+                # Parse suggested wait time from Groq rate limit message.
+                # Handles both "9.13s" and "560ms" formats.
+                match_s  = re.search(r"try again in (\d+(?:\.\d+)?)s", error_str, re.IGNORECASE)
+                match_ms = re.search(r"try again in (\d+(?:\.\d+)?)ms", error_str, re.IGNORECASE)
+                if match_s:
+                    wait = float(match_s.group(1)) + 2.0
+                    logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_attempts}). Waiting {wait:.1f}s")
+                elif match_ms:
+                    wait = float(match_ms.group(1)) / 1000.0 + 2.0
+                    logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_attempts}). Waiting {wait:.1f}s")
+                else:
+                    wait = 2 ** attempt
+                    logger.warning(f"LLM error (attempt {attempt + 1}/{max_attempts}): {e}. Retrying in {wait}s")
                 await asyncio.sleep(wait)

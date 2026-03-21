@@ -75,39 +75,48 @@ class RelType(str, Enum):
 class MatchWeight:
     """
     Dimension weights for the four-axis scoring model.
+    Skills are split into mandatory (must_have) and optional axes.
     Active dimensions are selected at runtime based on available graph data.
 
-    When all four dimensions have data:
-      Skills 45% + Domain 20% + SoftSkills 20% + CultureFit 15% = 100%
+    Base (no soft/culture data):
+      Mandatory Skills 55% + Optional Skills 10% + Domain 35% = 100%
 
-    When soft skill or culture data is missing, weights fall back gracefully:
-      No soft + no culture: Skills 65% + Domain 35%       (current behaviour, backwards compat)
-      Has culture, no soft: Skills 55% + Domain 25% + Culture 20%
-      Has soft, no culture: Skills 55% + Domain 25% + Soft 20%
+    With culture only:
+      Mandatory 47% + Optional 8% + Domain 25% + Culture 20% = 100%
+
+    With soft only:
+      Mandatory 47% + Optional 8% + Domain 25% + Soft 20% = 100%
+
+    With all four dimensions:
+      Mandatory 38% + Optional 7% + Domain 20% + Soft 20% + Culture 15% = 100%
     """
+    # Base weights (no soft/culture data)
+    SKILLS_MANDATORY: float = 0.55
+    SKILLS_OPTIONAL:  float = 0.10
+    DOMAIN:           float = 0.35
+    # With culture, no soft
+    MANDATORY_CULTURE: float = 0.47
+    OPTIONAL_CULTURE:  float = 0.08
+    DOMAIN_CULTURE:    float = 0.25
+    CULTURE_ONLY:      float = 0.20
+    # With soft, no culture
+    MANDATORY_SOFT:   float = 0.47
+    OPTIONAL_SOFT:    float = 0.08
+    DOMAIN_SOFT:      float = 0.25
+    SOFT_ONLY:        float = 0.20
     # Full 4-dimension weights
-    SKILLS_FULL:   float = 0.45
-    DOMAIN_FULL:   float = 0.20
-    SOFT_SKILLS:   float = 0.20
-    CULTURE_FIT:   float = 0.15
-    # Fallback when only culture is available (no soft data)
-    SKILLS_CULTURE: float = 0.55
-    DOMAIN_CULTURE: float = 0.25
-    CULTURE_ONLY:   float = 0.20
-    # Fallback when only soft skills are available (no culture data)
-    SKILLS_SOFT:   float = 0.55
-    DOMAIN_SOFT:   float = 0.25
-    SOFT_ONLY:     float = 0.20
-    # Legacy fallback when neither is available
-    SKILLS:        float = 0.65
-    DOMAIN:        float = 0.35
+    MANDATORY_FULL:   float = 0.38
+    OPTIONAL_FULL:    float = 0.07
+    DOMAIN_FULL:      float = 0.20
+    SOFT_SKILLS:      float = 0.20
+    CULTURE_FIT:      float = 0.15
 
 
 class SkillImportanceWeight:
     """Score weights for job skill requirement importance levels."""
     MUST_HAVE: float = 1.0
-    NICE_TO_HAVE: float = 0.5
-    DEFAULT: float = 0.8
+    OPTIONAL:  float = 0.5   # renamed from NICE_TO_HAVE
+    DEFAULT:   float = 0.8
 
 
 class EvidenceWeight:
